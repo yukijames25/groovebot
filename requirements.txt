@@ -1,10 +1,22 @@
-# GrooveBot — runtime + dev deps for M1.
-# Keep this short. Heavy ML stack (PyTorch / WavLM / Demucs / AIST++) lands
-# in M3 and trains on Kaggle, not on this machine.
-mujoco>=3.0
-pytest>=8.0
+# GrooveBot — core runtime + dev deps (local laptop / Windows).
+#
+# Heavy ML stack (BeatNet/torch in M0 experiments, PyTorch/WavLM/Demucs/AIST++
+# in M3) is NOT in here. It is in requirements-experiments.txt and runs on
+# Colab/Kaggle, not on the dev machine.
 
+# --- Body sim ---------------------------------------------------------------
+mujoco>=3.0
 # Optional: PyBullet backend (dynamics + GUI). Install if you want
 # `python demo_groove.py --backend pybullet --gui` to work and the PyBullet
 # half of tests/test_backends_smoke.py to actually run instead of skip.
 # pybullet>=3.2
+
+# --- Perception eval harness (M0) ------------------------------------------
+# These are light — no torch — and let tools/eval_beat.py run its harness
+# end-to-end against a synthetic click WAV without BeatNet present.
+mir_eval>=0.7
+soundfile>=0.12
+matplotlib>=3.7
+
+# --- Dev --------------------------------------------------------------------
+pytest>=8.0

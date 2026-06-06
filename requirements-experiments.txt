@@ -1,0 +1,13 @@
+# GrooveBot — experiment-side deps. Install in Colab / Kaggle, NOT on the
+# Windows dev laptop (madmom + torch are painful to install on Windows, and we
+# don't need them locally — local just runs the M1 demo + the M0 harness
+# smoke tests, both of which are BeatNet-free).
+#
+# Usage:
+#   !pip install -r requirements-experiments.txt        # Colab/Kaggle cell
+#
+# After install, `tools/eval_beat.py eval --wav ... --bpm ...` works end-to-end
+# (it imports BeatTrackerPerception which lazily pulls BeatNet).
+
+# Online beat tracker (mjhydri/BeatNet) — pulls torch + librosa + madmom.
+BeatNet>=1.1.0

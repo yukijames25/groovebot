@@ -24,9 +24,10 @@ source of truth ("the contract") that both the sim and the physical robot obey.
 
 ## Roadmap
 
-- **M0** Perception reality check. Run an open-source *singing* beat tracker
-  (mjhydri / SingNet) on your own a cappella + humming. Find where it breaks.
-  Pure audio — no robot.
+- **M0** *(this iteration)* Perception reality check. Run BeatNet on your own
+  a cappella + humming, score with F/CMLt/AMLt, see where it breaks. Pure
+  audio — no robot. See the **M0 — beat-tracking reality check** section
+  below for the harness and recording protocol.
 - **M1** *(this scaffold)* End-to-end loop with a metronome + hand-authored
   groove. Proves the whole pipeline runs. `python demo_groove.py`.
 - **M2** *(required)* Replace the constant `energy` with arousal estimated from
@@ -92,18 +93,81 @@ python demo_groove.py --backend mujoco --bpm 120 --energy 0.85 --seconds 8
 pytest
 ```
 
+## M0 — beat-tracking reality check (a cappella + humming)
+
+Goal: run a real singing beat tracker on your own a cappella and humming, see
+where it falls over, and have numbers to point to. The tracker is
+[BeatNet](https://github.com/mjhydri/BeatNet) (online / particle-filter mode,
+NFR-2 causal). The harness is `tools/eval_beat.py`.
+
+**Recording protocol (click-synced ground truth)**
+
+1. Put on earphones. Play a metronome through them at a known BPM.
+2. Record (mic + earphone audio routed only to your ears, not into the mic) a
+   short take of: a cappella → humming → a cappella, ~30 s each. Save the WAV.
+3. The metronome BPM is the ground truth. The harness builds the click grid
+   from `--bpm`.
+
+Store WAVs under `data/` (git-ignored).
+
+**Where it runs**
+
+- **Local** (Windows laptop): only the harness's synthetic-WAV smoke tests run
+  here. BeatNet itself is heavy on Windows (pulls torch + madmom), so we do not
+  install it locally — `tests/test_beat_tracker.py::*_real_beatnet_*` skips.
+- **Colab / Kaggle**: BeatNet runs here. Install with
+  `!pip install -r requirements-experiments.txt`, then call the same
+  `tools.eval_beat` CLI.
+
+**Running**
+
+```bash
+# Locally — synthetic smoke (no BeatNet needed):
+python -m tools.eval_beat synth --out data/click_120.wav --bpm 120 --seconds 8 --with-vocal
+
+# Anywhere BeatNet is installed (Colab/Kaggle, or after pip install):
+python -m tools.eval_beat eval --wav data/singing_120.wav --bpm 120 \
+       --beats-per-bar 4 --out data/singing_120.png
+python -m tools.eval_beat eval --wav data/humming_120.wav --bpm 120 \
+       --beats-per-bar 4 --out data/humming_120.png --json > data/humming_120.json
+```
+
+**Results table — fill in once real recordings exist**
+
+| Track | BPM | F | CMLt | AMLt | RT-factor |
+|---|---:|---:|---:|---:|---:|
+| a-cappella_120bpm.wav | 120 | _ | _ | _ | _ |
+| humming_120bpm.wav    | 120 | _ | _ | _ | _ |
+| a-cappella_90bpm.wav  |  90 | _ | _ | _ | _ |
+| humming_90bpm.wav     |  90 | _ | _ | _ | _ |
+
+Read the metrics as:
+- **F** — proximity F-measure (70 ms window). Counts how many detected beats
+  land near a click.
+- **CMLt** — Correct-Metrical-Level, tempo-locked. Drops to 0 if the tracker is
+  on a wrong tempo grid.
+- **AMLt** — Allowed-Metrical-Level. Forgiving of tempo halving / doubling. The
+  CMLt vs AMLt gap is the "octave error" signal you care about for humming.
+- **RT-factor** = process_sec / audio_sec. ≤ 1.0 means realtime-capable.
+
 ## Layout
 
 ```
-robot/groovebot.urdf      the body contract (10 DOF upper body)
+robot/groovebot.urdf          the body contract (10 DOF upper body)
 groovebot/
-  backend.py              RobotBackend interface + MuJoCo / PyBullet / RealServo
-  types.py                GrooveContext / JointCommand (spec §5.1)
-  groove.py               RuleGrooveGenerator — hand-authored groove (M1)
-  orchestrator.py         fixed 30-50 Hz control loop + MetronomePerception stub
-  limits.py               URDF-derived joint limits + clamp helper (NFR-4)
-demo_groove.py            end-to-end loop driven by the orchestrator
-tests/                    pytest: limit property + body-agnostic smoke + loop
-docs/SYSTEM_SPEC.md       the spec (the canonical reference)
-train/PIPELINE.md         the B-3 training pipeline (AIST++ → codebook → robot)
+  backend.py                  RobotBackend interface + MuJoCo / PyBullet / RealServo
+  types.py                    GrooveContext / JointCommand (spec §5.1)
+  groove.py                   RuleGrooveGenerator — hand-authored groove (M1)
+  orchestrator.py             fixed 30-50 Hz control loop + MetronomePerception stub
+  limits.py                   URDF-derived joint limits + clamp helper (NFR-4)
+  perception/
+    beat_tracker.py           BeatTrackerPerception wrapping BeatNet (M0; spec §5.2)
+tools/
+  eval_beat.py                M0 evaluation CLI (synth WAV + F/CMLt/AMLt + RT-factor + PNG)
+demo_groove.py                end-to-end loop driven by the orchestrator
+tests/                        pytest: limits, body-agnostic, orchestrator, eval, tracker
+docs/SYSTEM_SPEC.md           the spec (the canonical reference)
+train/PIPELINE.md             the B-3 training pipeline (AIST++ → codebook → robot)
+requirements.txt              core deps (local: mujoco, mir_eval, soundfile, matplotlib, pytest)
+requirements-experiments.txt  BeatNet stack (Colab/Kaggle only)
 ```

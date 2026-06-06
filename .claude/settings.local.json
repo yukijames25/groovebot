@@ -17,7 +17,14 @@
       "Bash(python -m pytest tests -q)",
       "Bash(python -c ' *)",
       "Bash(python demo_groove.py --backend mujoco --bpm 132 --energy 0.5 --seconds 4)",
-      "Bash(python -m pytest tests -v)"
+      "Bash(python -m pytest tests -v)",
+      "Bash(git rm *)",
+      "Bash(python -m pip install --user mir_eval soundfile matplotlib)",
+      "Bash(python -m tools.eval_beat eval --wav data/click_120_vocal.wav --bpm 120 --out data/eval_real.png)",
+      "Bash(echo \"---exit:$?---\")",
+      "Bash(python -m tools.eval_beat eval --wav data/click_120_vocal.wav --bpm 120)",
+      "Bash(echo \"exit:$?\")",
+      "Bash(python -m tools.eval_beat synth --out data/click_140.wav --bpm 140 --seconds 4 --with-vocal)"
     ]
   }
 }
