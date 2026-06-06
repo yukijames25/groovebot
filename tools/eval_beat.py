@@ -14,10 +14,19 @@ Outputs:
     waveform PNG       audio + ground-truth clicks + detected beats overlay
 
 Subcommands:
-    eval   --wav PATH --bpm BPM [--offset SEC] [--beats-per-bar 4] [--out PNG] [--json]
+    eval   --wav PATH (--bpm BPM | --beats FILE) [--offset SEC]
+           [--beats-per-bar 4] [--out PNG] [--json]
     synth  --out PATH --bpm BPM [--seconds SEC] [--with-vocal]
                                           # generate a synthetic click(+vocal) WAV
                                           # for harness smoke tests only.
+
+Ground-truth modes (mutually exclusive):
+    --bpm 120        constant-BPM click grid (synthetic / click-sync recording)
+    --beats FILE     one beat time (seconds) per line; supports comments and
+                     tab-separated multi-column annotations (first column is
+                     used). For public datasets with beat annotations
+                     (GTZAN-Rhythm, Ballroom, Isophonics/Beatles, RWC) after
+                     vocal-separation by tools/prep_dataset.py.
 
 The real M0 evaluation runs on Colab/Kaggle (BeatNet stack is heavy). This
 script is the same code path; locally it raises a clear error if BeatNet is
@@ -47,11 +56,38 @@ def click_grid(bpm: float, duration_sec: float,
     return offset_sec + np.arange(n) * period
 
 
+def load_beat_annotation(path: str) -> np.ndarray:
+    """Read a beat annotation file: one beat time (seconds) per line.
+
+    Tolerated formats — what `tools/prep_dataset.py` emits and what most
+    public dataset annotations look like after passing through it:
+      - lines starting with '#' or ';' are comments (skipped)
+      - blank lines are skipped
+      - lines may contain tab- or whitespace-separated columns; the FIRST
+        column is read as the beat time
+      - times must parse as float and be non-decreasing (sorted on read)
+    """
+    times: list[float] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or line.startswith(";"):
+                continue
+            first = line.split()[0]
+            try:
+                times.append(float(first))
+            except ValueError:
+                raise ValueError(
+                    f"{path}: cannot parse beat time from line: {raw!r}"
+                ) from None
+    return np.sort(np.asarray(times, dtype=float))
+
+
 @dataclass
 class BeatScores:
     """Per-track evaluation result. Keep flat so it serialises to one CSV row."""
     track: str
-    bpm: float
+    bpm: Optional[float]    # None when GT came from --beats (variable tempo)
     f_measure: float
     cmlc: float
     cmlt: float
@@ -64,7 +100,8 @@ class BeatScores:
     rt_factor: float        # proc_sec / audio_sec; <=1.0 means realtime-capable
 
 
-def score_beats(track: str, bpm: float, gt: np.ndarray, est: np.ndarray,
+def score_beats(track: str, bpm: Optional[float],
+                gt: np.ndarray, est: np.ndarray,
                 audio_sec: float, proc_sec: float) -> BeatScores:
     """Compute the standard mir_eval beat metrics + a latency proxy."""
     import mir_eval
@@ -172,6 +209,14 @@ def cmd_eval(args: argparse.Namespace) -> int:
         wav = wav.mean(axis=1)
     audio_sec = len(wav) / sr
 
+    # Ground truth: either a constant-BPM click grid or an annotation file.
+    if args.beats is not None:
+        gt = load_beat_annotation(args.beats)
+        bpm_for_report: Optional[float] = None
+    else:
+        gt = click_grid(args.bpm, audio_sec, offset_sec=args.offset)
+        bpm_for_report = args.bpm
+
     # Run the tracker. Import is lazy so the rest of the harness is testable
     # without BeatNet.
     from groovebot.perception import BeatTrackerPerception
@@ -182,9 +227,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
     proc_sec = time.perf_counter() - t0
     est = np.array([e.time for e in events], dtype=float)
 
-    gt = click_grid(args.bpm, audio_sec, offset_sec=args.offset)
-
-    scores = score_beats(track=os.path.basename(args.wav), bpm=args.bpm,
+    scores = score_beats(track=os.path.basename(args.wav), bpm=bpm_for_report,
                          gt=gt, est=est,
                          audio_sec=audio_sec, proc_sec=proc_sec)
 
@@ -216,7 +259,8 @@ def _format_row_header() -> str:
 
 
 def _format_row(s: BeatScores) -> str:
-    return (f"{s.track:<32}  {s.bpm:>6.1f}  {s.f_measure:>6.3f}  "
+    bpm = f"{s.bpm:>6.1f}" if s.bpm is not None else f"{'-':>6}"
+    return (f"{s.track:<32}  {bpm}  {s.f_measure:>6.3f}  "
             f"{s.cmlt:>6.3f}  {s.amlt:>6.3f}  {s.rt_factor:>6.2f}  "
             f"{s.n_est:>5d}  {s.n_gt:>5d}")
 
@@ -226,12 +270,18 @@ def build_parser() -> argparse.ArgumentParser:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    e = sub.add_parser("eval", help="evaluate a WAV against its click-grid GT")
+    e = sub.add_parser("eval", help="evaluate a WAV against click-grid or "
+                                    "beat-annotation ground truth")
     e.add_argument("--wav", required=True, help="input WAV file")
-    e.add_argument("--bpm", type=float, required=True,
-                   help="BPM of the click track the singer heard")
+    gt_group = e.add_mutually_exclusive_group(required=True)
+    gt_group.add_argument("--bpm", type=float, default=None,
+                          help="BPM of the click track the singer heard "
+                               "(constant-BPM ground truth)")
+    gt_group.add_argument("--beats", type=str, default=None,
+                          help="annotation file: one beat time (sec) per line "
+                               "(public-dataset ground truth, see spec §10.2)")
     e.add_argument("--offset", type=float, default=0.0,
-                   help="seconds before the first click in the recording")
+                   help="seconds before the first click (only with --bpm)")
     e.add_argument("--beats-per-bar", type=int, default=4)
     e.add_argument("--out", type=str, default=None,
                    help="PNG path for waveform + beats overlay")

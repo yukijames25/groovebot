@@ -56,6 +56,7 @@
 | FR-6 | 関節目標値を身体（シム/実機）に送り駆動する |
 | FR-7 | 顔の感情表示・胸画面（波形/絵文字/テキスト）を描画する |
 | FR-8 | 身体を設定で差し替えられる（MuJoCo/PyBullet/Pepper/NAO/自作機） |
+| FR-9 | 評価ハーネスは定常BPM（`--bpm`、合成クリック/被験者クリック同録）に加え、拍時刻列の注釈ファイル（`--beats`、1行1拍時刻[秒]）を受け付ける。これにより公開拍注釈データセット（§10.2）が同一指標で評価できる |
 
 ### 3.2 非機能要求 (Non-Functional Requirements)
 | ID | 要求 | 目標 |
@@ -237,7 +238,29 @@ VQ-VAE のノリ・コードブック ＋ 条件付き Transformer（beat_phase 
 
 ### 10.2 研究評価
 - **客観（同期精度）**: 被験者にイヤホンでクリックを聴かせて歌わせ、その拍グリッドを正解として
-  ロボ動作のズレを F値 / CMLt / AMLt で測定。
+  ロボ動作のズレを F値 / CMLt / AMLt で測定（`tools/eval_beat.py --bpm`）。
+- **公開データ方式（SOTA 比較可能・録音前から走らせられる）**: 拍注釈付き公開データを
+  Demucs でボーカル分離し、元曲の拍注釈をそのまま正解として評価する
+  （`tools/eval_beat.py --beats <annotation.txt>`、`tools/prep_dataset.py` が前処理を担当）。
+  これは「我々の楽曲に対する拍 GT は声の側にも継承する」というアカペラ拍追跡研究の標準手口で、
+  我々の手元録音が無くても評価ループが回せる。
+  - **拍注釈ありポップ/ロック/混合ジャンル**（一次評価。SOTA 値と直接比較）
+      - **GTZAN-Rhythm (Marchand & Peeters, 2015)**: 1000曲・10ジャンル、拍＋ダウンビート注釈
+      - **Ballroom (Gouyon et al. 2006; ISMIR LB extended)**: 698曲、拍注釈、テンポが安定
+      - **Hainsworth (Hainsworth & Macleod, 2004)**: 222曲、多ジャンル、難曲が多い
+      - **Isophonics / Beatles (Mauch et al. 2009)**: ビートルズ等、拍＋コード＋構造注釈
+      - **RWC Popular (Goto et al. 2002)**: J-Pop 100曲、AIST 配布
+  - **本物アカペラ（control。Demucs を経由しない素のボーカル）**
+      - **Dagstuhl ChoirSet (Rosenzweig et al. 2020)**: 多声合唱の単声ボーカル＋拍ラベル
+      - **Choral Singing Dataset (Cuesta et al. 2018)**: 単声録音
+  - **鼻歌コーパス（補助。拍 GT は無いので「拍の有無」「テンポ抽出の頑健性」分析専用）**
+      - **MIR-QBSH (Jang & Lee, 2008)**: 4431件の humming/singing、旋律 MIDI GT のみ
+      - **MTG-QBH (Salamon et al. 2013)**: ~120件、旋律 GT、Creative Commons
+  - **指標**（公開データ・録音とも同一）: F値（70ms 窓）、CMLt（厳格テンポ整合）、
+    AMLt（テンポ倍/半許容）、加えて RT-factor（壁時計処理時間 / 音源時間、≤1.0 が realtime 可）。
+  - **手順サマリ**: ① 公開データを取得 → ② `prep_dataset.py` が Demucs で vocal 分離し、
+    付属拍注釈を `--beats` 形式 1列 [秒] のテキストへ変換 → ③ Colab/Kaggle で
+    `eval_beat.py eval --wav vocal.wav --beats annot.beats` を走らせ、表に積む。
 - **主観（HRI）**: 同期条件 vs 非同期条件（わざと拍を外す）で、楽しさ・「合ってる感」・
   エンゲージメントを比較。Keepon 型の対照実験設計。
 
@@ -274,3 +297,32 @@ docs/SYSTEM_SPEC.md         本書
 - **causal/online**: 未来を見ずに逐次処理すること（リアルタイムの必須条件）。
 - **retarget**: 人体骨格の動きをロボの関節構成へ写し替えること。
 - **ports & adapters**: 中核ロジックを外部実装から隔離する設計（脳/身体分離）。
+
+---
+
+## 14. 参照情報つきビート追跡（将来拡張 / Reference-informed beat tracking）
+
+### 14.1 動機
+アカペラ/鼻歌に対する盲目的（bottom-up）なビート追跡は不確実（特に鼻歌は拍が無いことが多い）。
+一方ターゲットはカラオケ＝既知曲なので、曲を特定し、その参照曲の信頼できる拍グリッドを
+オンラインアライメントで継承すれば、確実性が大きく上がる。タイミングを弱い入力信号ではなく
+参照から得るため、鼻歌に拍が立っていなくても同期できる。
+
+### 14.2 ハイブリッド構成（BeatTracker 層の内部で完結。§5.2 の契約は不変）
+- **参照モード（主系）**: 曲特定（QBH/旋律照合）→ 参照タイムラインへ online alignment
+  （online DTW / score following）→ 拍グリッド・小節頭・楽曲構造を継承。
+- **盲目モード（フォールバック）**: M0 の歌声ビート追跡。コールドスタート・低信頼・未知曲で使用。
+- **信頼度ゲート**で両モードを切替（誤特定＝「自信満々に誤った拍」を防ぐ閾値とフォールバック）。
+
+### 14.3 制約・留意
+- NFR-2 を維持（offline DTW 不可、online のみ）。
+- クラシック等（rubato・レパートリー曖昧）は弱点。カラオケ用途ではスコープ外として許容。
+- 音源分離ブートストラップは「参照DBの構築」と「盲目トラッカーの学習」の双方に再利用。
+
+### 14.4 副産物
+楽曲構造（サビ・ビルドアップ・ドロップ）を取得できるため、「次サビが来る」を予期した
+先読みのノリ（anticipatory grooving）が可能になる。盲目追跡では不可能な音楽的表現。
+
+### 14.5 段取り
+盲目トラッカー（M0）をフォールバック兼ベースラインとして先に完成 → 参照モードは後段フェーズ。
+関連: score following / 自動伴奏（Antescofo, Music Plus One）, online DTW（MATCH/Dixon）, QBH。

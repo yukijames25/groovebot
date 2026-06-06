@@ -150,6 +150,54 @@ Read the metrics as:
   CMLt vs AMLt gap is the "octave error" signal you care about for humming.
 - **RT-factor** = process_sec / audio_sec. ≤ 1.0 means realtime-capable.
 
+### Public-data evaluation (no recordings needed; SOTA-comparable)
+
+The harness also accepts an annotation file via `--beats <FILE>` (one beat
+time in seconds per line). Combined with vocal-separated audio from a
+public, beat-annotated dataset, this lets us run the same evaluation against
+SOTA-compatible ground truth before any home recordings exist (spec §10.2).
+
+**Recommended public datasets**
+
+- *Beat-annotated pop / rock* (primary — directly comparable with SOTA):
+  - **GTZAN-Rhythm** (Marchand & Peeters 2015) — 1000 tracks, 10 genres
+  - **Ballroom** (Gouyon et al. 2006) — 698 tracks, stable tempo
+  - **Hainsworth** (Hainsworth & Macleod 2004) — 222 difficult tracks
+  - **Isophonics / Beatles** (Mauch et al. 2009) — beats + chords + structure
+  - **RWC Popular** (Goto et al. 2002, AIST annotations) — 100 J-Pop tracks
+- *Real a cappella* (control — no Demucs needed):
+  - **Dagstuhl ChoirSet** (Rosenzweig et al. 2020)
+  - **Choral Singing Dataset** (Cuesta et al. 2018)
+- *Humming corpora* (auxiliary — melody-only GT; for tempo-only / has-beat
+  analysis, not F-measure against beats):
+  - **MIR-QBSH** (Jang & Lee 2008), **MTG-QBH** (Salamon et al. 2013)
+
+**Pipeline (Colab/Kaggle — Demucs and BeatNet live there)**
+
+```bash
+# (1) Convert the dataset's annotation to our --beats format.
+#     Runs anywhere; no heavy deps.
+python -m tools.prep_dataset convert-ann --dataset ballroom \
+       --input  raw/Ballroom/annotations/Albums-AnaBelen_Veneo-11.beats \
+       --output data/beats/AnaBelen_Veneo-11.beats
+
+# (2) Separate vocals with Demucs. Colab/Kaggle only.
+#     !pip install -r requirements-experiments.txt
+python -m tools.prep_dataset separate \
+       --wav     raw/Ballroom/audio/AnaBelen_Veneo-11.wav \
+       --out-dir data/vocal
+
+# (3) Evaluate the same way as for click-synced recordings, but with --beats:
+python -m tools.eval_beat eval \
+       --wav   data/vocal/AnaBelen_Veneo-11.wav \
+       --beats data/beats/AnaBelen_Veneo-11.beats \
+       --out   data/eval/AnaBelen_Veneo-11.png
+```
+
+Locally, only **(1)** runs — the parser is pure Python (covered by
+`tests/test_prep_dataset.py`). Steps **(2)** and **(3)** raise a clear
+"installed on Colab/Kaggle" error when Demucs / BeatNet are missing.
+
 ## Layout
 
 ```
@@ -163,7 +211,8 @@ groovebot/
   perception/
     beat_tracker.py           BeatTrackerPerception wrapping BeatNet (M0; spec §5.2)
 tools/
-  eval_beat.py                M0 evaluation CLI (synth WAV + F/CMLt/AMLt + RT-factor + PNG)
+  eval_beat.py                M0 evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG)
+  prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
 demo_groove.py                end-to-end loop driven by the orchestrator
 tests/                        pytest: limits, body-agnostic, orchestrator, eval, tracker
 docs/SYSTEM_SPEC.md           the spec (the canonical reference)
