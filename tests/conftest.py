@@ -1,0 +1,10 @@
+"""Make the repo root importable so `from groovebot... import ...` works in tests."""
+from __future__ import annotations
+import os
+import sys
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+URDF_PATH = os.path.join(ROOT, "robot", "groovebot.urdf")

@@ -1,0 +1,10 @@
+# GrooveBot — runtime + dev deps for M1.
+# Keep this short. Heavy ML stack (PyTorch / WavLM / Demucs / AIST++) lands
+# in M3 and trains on Kaggle, not on this machine.
+mujoco>=3.0
+pytest>=8.0
+
+# Optional: PyBullet backend (dynamics + GUI). Install if you want
+# `python demo_groove.py --backend pybullet --gui` to work and the PyBullet
+# half of tests/test_backends_smoke.py to actually run instead of skip.
+# pybullet>=3.2

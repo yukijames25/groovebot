@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import mujoco; print\\('mujoco', mujoco.__version__\\)\")",
+      "Bash(python -c \"import pybullet; print\\('pybullet', pybullet.getAPIVersion\\(\\)\\)\")",
+      "Bash(python -c \"import pytest; print\\('pytest', pytest.__version__\\)\")",
+      "Bash(python -m pip install --user mujoco pytest)",
+      "Bash(mkdir -p groovebot robot docs train tests)",
+      "Bash(git mv *)",
+      "Bash(mv backend.py groovebot/backend.py)",
+      "Bash(mv groove.py groovebot/groove.py)",
+      "Bash(mv groovebot.urdf robot/groovebot.urdf)",
+      "Bash(mv SYSTEM_SPEC.md docs/SYSTEM_SPEC.md)",
+      "Bash(mv PIPELINE.md train/PIPELINE.md)",
+      "Bash(python demo_groove.py --backend mujoco --bpm 120 --energy 0.85 --seconds 1)",
+      "Bash(python -c \"from groovebot.types import GrooveContext, JointCommand; c = GrooveContext\\(beat_pos=1.5, downbeat=False, tempo=120.0, arousal=0.7, valence=0.2, energy=0.8\\); print\\(c\\); j = JointCommand\\(targets={'neck_pitch': 0.1}\\); print\\(j\\)\")",
+      "Bash(python -m pytest tests -q)",
+      "Bash(python -c ' *)",
+      "Bash(python demo_groove.py --backend mujoco --bpm 132 --energy 0.5 --seconds 4)",
+      "Bash(python -m pytest tests -v)"
+    ]
+  }
+}

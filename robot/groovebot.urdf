@@ -1,0 +1,130 @@
+<?xml version="1.0"?>
+<!--
+  GrooveBot 10-DOF upper-body robot.
+  This URDF is the single source of truth for the body ("the contract").
+  - The simulator loads it now.
+  - After lab assignment, the physical robot is built to match it, and each
+    joint below maps 1:1 to a servo.
+  Coordinate convention:  Z = up,  X = forward,  Y = left.
+  DOF (10):
+    neck_pitch, neck_yaw,
+    torso_roll, torso_pitch,
+    l_shoulder_pitch, l_shoulder_roll, l_elbow,
+    r_shoulder_pitch, r_shoulder_roll, r_elbow
+-->
+<robot name="groovebot">
+
+  <material name="dark">  <color rgba="0.18 0.20 0.24 1"/></material>
+  <material name="accent"><color rgba="0.95 0.45 0.20 1"/></material>
+  <material name="light"> <color rgba="0.70 0.74 0.80 1"/></material>
+
+  <!-- ===== Base / stand (fixed to world in sim) ===== -->
+  <link name="base_link">
+    <inertial><mass value="2.0"/><inertia ixx="0.01" iyy="0.01" izz="0.01" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 0.05"/><geometry><box size="0.14 0.14 0.10"/></geometry><material name="dark"/></visual>
+    <collision><origin xyz="0 0 0.05"/><geometry><box size="0.14 0.14 0.10"/></geometry></collision>
+  </link>
+
+  <!-- ===== Torso: roll (side sway) then pitch (lean) ===== -->
+  <link name="torso_roll_link">
+    <inertial><mass value="0.2"/><inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="torso_roll" type="revolute">
+    <parent link="base_link"/><child link="torso_roll_link"/>
+    <origin xyz="0 0 0.11"/><axis xyz="1 0 0"/>
+    <limit lower="-0.45" upper="0.45" effort="8" velocity="6"/>
+  </joint>
+
+  <link name="torso_link">
+    <inertial><mass value="1.2"/><inertia ixx="0.006" iyy="0.006" izz="0.004" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 0.11"/><geometry><box size="0.16 0.10 0.22"/></geometry><material name="light"/></visual>
+    <collision><origin xyz="0 0 0.11"/><geometry><box size="0.16 0.10 0.22"/></geometry></collision>
+  </link>
+  <joint name="torso_pitch" type="revolute">
+    <parent link="torso_roll_link"/><child link="torso_link"/>
+    <origin xyz="0 0 0"/><axis xyz="0 1 0"/>
+    <limit lower="-0.45" upper="0.45" effort="8" velocity="6"/>
+  </joint>
+
+  <!-- ===== Neck: yaw (turn) then pitch (nod) + head ===== -->
+  <link name="neck_yaw_link">
+    <inertial><mass value="0.1"/><inertia ixx="0.0005" iyy="0.0005" izz="0.0005" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="neck_yaw" type="revolute">
+    <parent link="torso_link"/><child link="neck_yaw_link"/>
+    <origin xyz="0 0 0.24"/><axis xyz="0 0 1"/>
+    <limit lower="-1.2" upper="1.2" effort="4" velocity="8"/>
+  </joint>
+
+  <link name="head_link">
+    <inertial><mass value="0.4"/><inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 0.05"/><geometry><box size="0.10 0.10 0.10"/></geometry><material name="accent"/></visual>
+    <collision><origin xyz="0 0 0.05"/><geometry><box size="0.10 0.10 0.10"/></geometry></collision>
+  </link>
+  <joint name="neck_pitch" type="revolute">
+    <parent link="neck_yaw_link"/><child link="head_link"/>
+    <origin xyz="0 0 0.02"/><axis xyz="0 1 0"/>
+    <limit lower="-0.7" upper="0.7" effort="4" velocity="8"/>
+  </joint>
+
+  <!-- ===== Left arm: shoulder pitch, shoulder roll, elbow ===== -->
+  <link name="l_sh_pitch_link">
+    <inertial><mass value="0.05"/><inertia ixx="0.0002" iyy="0.0002" izz="0.0002" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="l_shoulder_pitch" type="revolute">
+    <parent link="torso_link"/><child link="l_sh_pitch_link"/>
+    <origin xyz="0 0.10 0.20"/><axis xyz="0 1 0"/>
+    <limit lower="-2.2" upper="2.2" effort="6" velocity="8"/>
+  </joint>
+  <link name="l_upperarm_link">
+    <inertial><mass value="0.25"/><inertia ixx="0.0008" iyy="0.0008" izz="0.0003" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 -0.07"/><geometry><cylinder radius="0.022" length="0.14"/></geometry><material name="dark"/></visual>
+    <collision><origin xyz="0 0 -0.07"/><geometry><cylinder radius="0.022" length="0.14"/></geometry></collision>
+  </link>
+  <joint name="l_shoulder_roll" type="revolute">
+    <parent link="l_sh_pitch_link"/><child link="l_upperarm_link"/>
+    <origin xyz="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-0.2" upper="2.6" effort="6" velocity="8"/>
+  </joint>
+  <link name="l_forearm_link">
+    <inertial><mass value="0.18"/><inertia ixx="0.0005" iyy="0.0005" izz="0.0002" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><cylinder radius="0.018" length="0.12"/></geometry><material name="accent"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><cylinder radius="0.018" length="0.12"/></geometry></collision>
+  </link>
+  <joint name="l_elbow" type="revolute">
+    <parent link="l_upperarm_link"/><child link="l_forearm_link"/>
+    <origin xyz="0 0 -0.14"/><axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="2.4" effort="5" velocity="8"/>
+  </joint>
+
+  <!-- ===== Right arm: shoulder pitch, shoulder roll, elbow ===== -->
+  <link name="r_sh_pitch_link">
+    <inertial><mass value="0.05"/><inertia ixx="0.0002" iyy="0.0002" izz="0.0002" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+  <joint name="r_shoulder_pitch" type="revolute">
+    <parent link="torso_link"/><child link="r_sh_pitch_link"/>
+    <origin xyz="0 -0.10 0.20"/><axis xyz="0 1 0"/>
+    <limit lower="-2.2" upper="2.2" effort="6" velocity="8"/>
+  </joint>
+  <link name="r_upperarm_link">
+    <inertial><mass value="0.25"/><inertia ixx="0.0008" iyy="0.0008" izz="0.0003" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 -0.07"/><geometry><cylinder radius="0.022" length="0.14"/></geometry><material name="dark"/></visual>
+    <collision><origin xyz="0 0 -0.07"/><geometry><cylinder radius="0.022" length="0.14"/></geometry></collision>
+  </link>
+  <joint name="r_shoulder_roll" type="revolute">
+    <parent link="r_sh_pitch_link"/><child link="r_upperarm_link"/>
+    <origin xyz="0 0 0"/><axis xyz="1 0 0"/>
+    <limit lower="-2.6" upper="0.2" effort="6" velocity="8"/>
+  </joint>
+  <link name="r_forearm_link">
+    <inertial><mass value="0.18"/><inertia ixx="0.0005" iyy="0.0005" izz="0.0002" ixy="0" ixz="0" iyz="0"/></inertial>
+    <visual><origin xyz="0 0 -0.06"/><geometry><cylinder radius="0.018" length="0.12"/></geometry><material name="accent"/></visual>
+    <collision><origin xyz="0 0 -0.06"/><geometry><cylinder radius="0.018" length="0.12"/></geometry></collision>
+  </link>
+  <joint name="r_elbow" type="revolute">
+    <parent link="r_upperarm_link"/><child link="r_forearm_link"/>
+    <origin xyz="0 0 -0.14"/><axis xyz="0 1 0"/>
+    <limit lower="0.0" upper="2.4" effort="5" velocity="8"/>
+  </joint>
+
+</robot>
