@@ -24,7 +24,12 @@
       "Bash(echo \"---exit:$?---\")",
       "Bash(python -m tools.eval_beat eval --wav data/click_120_vocal.wav --bpm 120)",
       "Bash(echo \"exit:$?\")",
-      "Bash(python -m tools.eval_beat synth --out data/click_140.wav --bpm 140 --seconds 4 --with-vocal)"
+      "Bash(python -m tools.eval_beat synth --out data/click_140.wav --bpm 140 --seconds 4 --with-vocal)",
+      "Bash(git remote *)",
+      "Bash(python -m tools.eval_beat eval --help)",
+      "Bash(python -m tools.prep_dataset convert-ann --help)",
+      "Bash(python -m tools.prep_dataset separate --help)",
+      "Bash(python -m tools._build_m0_notebook)"
     ]
   }
 }

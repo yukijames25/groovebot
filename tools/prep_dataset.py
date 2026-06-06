@@ -142,23 +142,33 @@ def _require_demucs():
 
 
 def separate_vocal(in_wav: str, out_dir: str, model: str = "htdemucs") -> str:
-    """Run Demucs to extract the vocal stem from `in_wav`. Returns the path of
-    the vocal WAV that was written.
+    """Run Demucs (two-stems: vocals) and return the path to vocals.wav.
 
-    Stub: this raises locally (Demucs not installed). Implementation is wired
-    up on Colab/Kaggle, where you should call `demucs.separate.main(...)` or
-    use the API directly. We keep this function's signature stable so the
-    Colab notebook can import it.
+    Locally this raises RuntimeError because demucs is not installed. The
+    Colab/Kaggle notebook calls it after `pip install -r requirements-
+    experiments.txt`.
+
+    Demucs writes to `<out_dir>/<model>/<track_stem>/vocals.wav` (and
+    `other.wav` for the rest); we mirror that contract here so callers know
+    where to look.
     """
     sep = _require_demucs()       # local: RuntimeError with install hint.
-    # On experiments side, replace with the actual call. Sketch:
-    #   sep.main(["--two-stems=vocals", "-n", model, "-o", out_dir, in_wav])
-    #   return resulting vocal WAV path.
-    raise NotImplementedError(
-        "separate_vocal: Demucs is available, but the call is stubbed. Wire "
-        "it up in the experiments notebook once you settle on the model + "
-        "output layout."
-    )
+    in_path = Path(in_wav)
+    out_root = Path(out_dir)
+    out_root.mkdir(parents=True, exist_ok=True)
+    sep.main([
+        "--two-stems=vocals",
+        "-n", model,
+        "-o", str(out_root),
+        str(in_path),
+    ])
+    vocals = out_root / model / in_path.stem / "vocals.wav"
+    if not vocals.exists():
+        raise RuntimeError(
+            f"Demucs ran but vocals.wav was not found at {vocals}. "
+            f"Check the model name ({model!r}) and the output layout."
+        )
+    return str(vocals)
 
 
 # --------------------------------------------------------------------------- #

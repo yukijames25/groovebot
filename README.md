@@ -198,6 +198,40 @@ Locally, only **(1)** runs — the parser is pure Python (covered by
 `tests/test_prep_dataset.py`). Steps **(2)** and **(3)** raise a clear
 "installed on Colab/Kaggle" error when Demucs / BeatNet are missing.
 
+### Turnkey Colab notebook — GTZAN-Rhythm sweep
+
+`notebooks/m0_gtzan_eval.ipynb` runs the whole pipeline (clone, install,
+fetch GTZAN audio + Marchand–Peeters annotations, Demucs vocal separation,
+BeatNet evaluation, per-genre table + CSV) on a fresh Colab GPU runtime.
+
+**Open in Colab:**
+
+> [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yukijames25/groovebot/blob/master/notebooks/m0_gtzan_eval.ipynb)
+
+Or paste this URL into a browser:
+`https://colab.research.google.com/github/yukijames25/groovebot/blob/master/notebooks/m0_gtzan_eval.ipynb`
+
+The notebook:
+- evaluates only the **vocal-heavy** GTZAN genres
+  (`pop`, `rock`, `hiphop`, `reggae`, `blues`, `country`, `disco`); classical /
+  jazz / metal are excluded.
+- uses BeatNet's `online` (particle-filter) mode only (NFR-2).
+- has a single user knob, `PER_GENRE_LIMIT` (default 5 → 35 tracks total;
+  ~20–30 min on a T4).
+- prefers the `TempoBeatDownbeat/gtzan_mini` GitHub mirror for audio and
+  falls back to the Kaggle GTZAN mirror (requires `kaggle.json`).
+- writes `data/m0_work/{beats,vocal,eval}/` + per-track and per-genre CSVs.
+
+The actual loop / aggregation lives in `experiments/run_gtzan_eval.py` and
+is covered by `tests/test_run_gtzan_eval.py` (no Demucs / BeatNet / torch
+needed locally).
+
+**Editing the notebook locally:** the notebook is generated from
+`tools/_build_m0_notebook.py`. Edit that script, then run
+`python -m tools._build_m0_notebook` to regenerate
+`notebooks/m0_gtzan_eval.ipynb`. Structural and CLI-flag consistency are
+checked by `tests/test_notebook.py`.
+
 ## Layout
 
 ```
@@ -213,6 +247,11 @@ groovebot/
 tools/
   eval_beat.py                M0 evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG)
   prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
+  _build_m0_notebook.py       regenerates notebooks/m0_gtzan_eval.ipynb (source of truth)
+experiments/
+  run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate
+notebooks/
+  m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator
 tests/                        pytest: limits, body-agnostic, orchestrator, eval, tracker
 docs/SYSTEM_SPEC.md           the spec (the canonical reference)
