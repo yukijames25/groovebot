@@ -19,9 +19,32 @@
 
 ## 段取り（一度に1フェーズだけ。デモは常に動く状態を保つ）
 - **M0**: 歌声/鼻歌で拍追跡が壊れる箇所を把握（音声のみ）。
-- **M1**（現在地）: メトロノーム＋手付けノリで端到端を通す。
+- **M1**: メトロノーム＋手付けノリで端到端を通す。
 - **M2（必達）**: 声→テンション（B-2）＋画面フィードバック。
 - **M3（目標）**: 学習モデル（VQ-VAE＋Transformer）でノリ生成。
+
+## 現在地と次の一手
+> `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
+> 進捗が動いたら都度更新する（古いまま放置しない）。
+
+最新コミット: `26c6957` ／ タグ: `m0-1`（既存タグ: `m0`, `m1`, `m0-1`）。
+
+### 完了
+- **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
+- **M0**: 拍追跡評価ハーネス。合成クリック＋`mir_eval` で F値／CMLt／AMLt／RT-factor。`tools/eval_beat.py`, `tools/prep_dataset.py`（Demucs で公開データから vocal 分離＋拍注釈を `--beats` 形式へ）、`experiments/run_gtzan_eval.py`, `notebooks/m0_gtzan_eval.ipynb`（Colab turnkey）。
+- **M0-1**: 注釈ファイル名マッチの修正（拡張子・大文字小文字・stem 一致）、`PipelineReport` によるステージ別カウント（detected wav / matched annot / demucs ok / beatnet ok / scored）の透明化、`demucs` を `requirements-experiments.txt` に追加、Demucs 出力 vocal パスのフォールバック対応。
+
+### 次の一手（手動・Claude Code 側のタスクではない）
+1. `notebooks/m0_gtzan_eval.ipynb` を Colab で開いて実行（GPU は任意）。
+   - `gtzan_mini` に音源を同梱済みなので Kaggle 認証は不要。
+   - 取得したいもの: GTZAN vocal-stem に対する盲目 BeatNet の **初の実数字**（F値 / CMLt / AMLt / RT-factor）。
+   - 実行後は `report.summary()` でステージ別件数を確認（どこで落ちたかが分かる）。
+
+### その後の判断
+- 上記の数字を見て、§14（参照情報つきビート追跡）にどれだけ寄せるかを決める。
+- 続いて **M2**（arousal 推定 + 画面フィードバック）→ **M3**（学習 groove 生成）。
+
+不変条件（脳は身体を import しない、causal/online、関節クランプ、固定 30–50 Hz 制御）は冒頭通りで不変。
 
 ## 現状（既にあるもの）
 - `robot/groovebot.urdf` … 10自由度・上半身（身体の契約）
