@@ -22,3 +22,12 @@ ckpt/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Secrets — never commit. Kaggle API token, AWS creds, dotenv, etc.
+kaggle.json
+.kaggle/
+*.pem
+*.key
+.env
+.env.*
+!.env.example
