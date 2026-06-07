@@ -37,9 +37,16 @@
 | 研究者 | システムを構築・学習・評価する |
 
 ### 2.3 主要ユースケース
-1. ユーザが歌う → ロボがリアルタイムで拍に同期して動く。
+1. **曲選択 → 参照ロード → 同期**: ユーザがカラオケ要領で曲を選ぶ →
+   その曲の参照（拍時刻・小節頭・曲構造・アライメント用特徴）を読み込む →
+   ユーザがアカペラ/鼻歌で歌う → ロボがオンラインで歌声を参照タイムラインへ
+   整合し、参照側の拍グリッドに同期して動く。
 2. テンションが上がる → 動きが大きく速くなる、画面に「Foo!!」等を表示。
 3. 評価実験 → 同期条件 vs 非同期条件で、客観精度と主観評価を取得。
+
+> **主軸**: タイミングは「ユーザが選んだ曲の参照拍グリッド」が支配する（§14）。
+> 弱い歌声から盲目に拍を再抽出するのではなく、信頼できる外部タイムラインに整合する。
+> 盲目オンラインビート追跡（BeatTracker 系）は未知曲・即興鼻歌向けの**任意のフォールバック**である（§14.3）。
 
 ---
 
@@ -49,7 +56,7 @@
 | ID | 要求 |
 |---|---|
 | FR-1 | マイク/ファイルから歌声を取り込む |
-| FR-2 | 歌声からオンライン（causal）に拍位相・ダウンビート・テンポを推定する |
+| FR-2 | （フォールバック、§14.3）未知曲・即興鼻歌に対しては歌声から盲目にオンライン（causal）拍位相・ダウンビート・テンポを推定する |
 | FR-3 | 歌声から覚醒度(arousal)・感情価(valence)・エネルギーを推定する |
 | FR-4 | (M3) 歌声から自己教師あり埋め込み (voice embedding) を抽出する |
 | FR-5 | 上記の条件からロボットの関節目標値（ノリ）を生成する |
@@ -57,6 +64,8 @@
 | FR-7 | 顔の感情表示・胸画面（波形/絵文字/テキスト）を描画する |
 | FR-8 | 身体を設定で差し替えられる（MuJoCo/PyBullet/Pepper/NAO/自作機） |
 | FR-9 | 評価ハーネスは定常BPM（`--bpm`、合成クリック/被験者クリック同録）に加え、拍時刻列の注釈ファイル（`--beats`、1行1拍時刻[秒]）を受け付ける。これにより公開拍注釈データセット（§10.2）が同一指標で評価できる |
+| FR-10 | ユーザは曲を選択でき、その曲の `SongReference`（拍時刻・小節頭・曲構造・アライメント用参照特徴）をロードできる |
+| FR-11 | 生の歌声フレームを `SongReference` のタイムラインへオンライン（causal）に整合し、参照内位置から `beat_pos / downbeat / tempo / section` を `GrooveContext` に流す（主軸、§14） |
 
 ### 3.2 非機能要求 (Non-Functional Requirements)
 | ID | 要求 | 目標 |
@@ -79,28 +88,35 @@
 
 ### 4.2 データフロー
 ```
- mic/file ─► AudioInput ─► (ring buffer)
-                               │
-            ┌──────────────────┼───────────────────┐
-            ▼                  ▼                   ▼
-       BeatTracker       ArousalEstimator     VoiceEncoder(M3)
-       beat_pos,         arousal, valence,    embedding
-       downbeat, tempo   energy
-            └──────────────────┼───────────────────┘
-                               ▼
-                         GrooveContext  ──►  GrooveGenerator ──► JointCommand
-                                                                     │
-                                          ┌──────────────────────────┼────────────┐
-                                          ▼                          ▼            ▼
-                                    RobotBackend            FeedbackRenderer   (logging)
-                                  (MuJoCo/…/RealServo)      (face/screen)
+ user picks song ──► SongReference  ────────────────────────────┐
+                     (beats, downbeats,                          │
+                      sections, align_features)                  │
+                                                                 ▼
+ mic/file ──► AudioInput ──► (ring buffer) ──► ReferenceAligner ─► beat_pos,
+                                  │            (主軸 §14)          downbeat,
+                                  │                                tempo,
+                                  │                                section
+                                  ├──► ArousalEstimator ──► arousal, valence, energy
+                                  └──► VoiceEncoder(M3) ──► embedding
+                                                │
+                                                ▼
+                                          GrooveContext ──► GrooveGenerator ──► JointCommand
+                                                                                       │
+                                                       ┌───────────────────────────────┼────────────┐
+                                                       ▼                               ▼            ▼
+                                                 RobotBackend             FeedbackRenderer       (logging)
+                                                (MuJoCo/…/RealServo)      (face/screen)
+
+ (フォールバック経路: SongReference が無い／未知曲・即興鼻歌の時のみ、
+  AudioInput ──► BeatTracker ──► beat_pos, downbeat, tempo  を使用。§14.3)
 ```
 
 ### 4.3 コンポーネント一覧
 | コンポーネント | 責務 | 入力 → 出力 | フェーズ | 実装候補 |
 |---|---|---|---|---|
 | AudioInput | 音声取得・バッファリング | mic/file → frames | M0 | sounddevice / soundfile |
-| BeatTracker | オンライン拍追跡 | frames → beat_pos, downbeat, tempo | M0/M1 | SingNet / mjhydri |
+| ReferenceAligner | **オンライン参照アライメント（主軸）** | (frames, SongReference) → beat_pos, downbeat, tempo, section | M0'/M2 | online DTW (MATCH/Dixon系) / score following (Antescofo系) |
+| BeatTracker | （フォールバック）盲目オンライン拍追跡 | frames → beat_pos, downbeat, tempo | 任意 | SingNet / mjhydri / BeatNet（棚上げ、§10.2 副次） |
 | ArousalEstimator | テンション推定 (B-2) | frames → arousal, valence, energy | M2 | MER head（音源分離転移） |
 | VoiceEncoder | SSL 埋め込み | frames → embedding | M3 | WavLM / HuBERT |
 | GrooveGenerator | ノリ生成 | GrooveContext → JointCommand | M1→M3 | 規則(M1) → VQ-VAE+Transformer(M3) |
@@ -126,18 +142,36 @@ class GrooveContext:
     arousal: float         # 0..1  テンション（B-2）
     valence: float         # -1..1 感情価（B-2）
     energy: float          # 0..1  瞬間音量エンベロープ
+    section: str | None = None              # 例: "verse" / "chorus" / "bridge"（参照モード時）
     embedding: "np.ndarray | None" = None   # M3 用 voice embedding
 
 @dataclass
 class JointCommand:
     targets: dict[str, float]   # joint_name -> radians（URDF の JOINT_NAMES）
+
+@dataclass
+class SongReference:
+    """ユーザが選んだ曲の参照タイムライン（§14 主軸入力）。"""
+    beats: "np.ndarray"          # shape (N,), 拍時刻 [秒]
+    downbeats: "np.ndarray"      # shape (M,), 小節頭時刻 [秒]
+    sections: list[tuple[float, float, str]]   # [(start_sec, end_sec, label), ...]
+    align_features: "np.ndarray"  # 参照側のアライメント用特徴系列（例: chroma / pYIN melody / vocal SSL）
+    sample_rate: int              # align_features のフレームレート [Hz]
+    tempo: float                  # 名目 BPM（曲全体のミドル値で可）
 ```
 
 ### 5.2 モジュールインターフェース
 ```python
 from typing import Protocol
 
+class ReferenceAligner(Protocol):
+    """主軸: ユーザ選択曲の参照タイムラインへ歌声を online 整合させる（§14）。"""
+    def load(self, ref: SongReference) -> None: ...
+    def update(self, frames) -> tuple[float, bool, float, str | None]:
+        ...   # beat_pos, downbeat, tempo, section_label（参照位置に追随）
+
 class BeatTracker(Protocol):
+    """フォールバック: 参照が無い／未知曲・即興鼻歌でのみ使用（§14.3）。"""
     def update(self, frames) -> tuple[float, bool, float]: ...   # beat_pos, downbeat, tempo
 
 class ArousalEstimator(Protocol):
@@ -159,9 +193,14 @@ class RobotBackend(Protocol):
 class FeedbackRenderer(Protocol):
     def render(self, ctx: GrooveContext, waveform) -> None: ...
 ```
-> 注: 現行コードの `GrooveController.compute(beat_pos, energy)` は M1 簡易版。
-> M3 へは `generate(ctx: GrooveContext)` に一般化する（このファイルだけ差し替え）。
-> 全ての `JointCommand.targets` は出力直前に URDF 可動域へクランプする（NFR-4）。
+> 注:
+> - 主軸の `ReferenceAligner.update` は **causal / online** に限る（NFR-2）。
+>   offline DTW は禁止。online DTW (MATCH/Dixon) / score following 系のみ。
+> - `ReferenceAligner` も `BeatTracker` も下流の契約（`GrooveContext` 構築）に対しては
+>   交換可能。Orchestrator は主軸→フォールバックの順で選ぶ。
+> - 現行コードの `GrooveController.compute(beat_pos, energy)` は M1 簡易版。
+>   M3 へは `generate(ctx: GrooveContext)` に一般化する（このファイルだけ差し替え）。
+> - 全ての `JointCommand.targets` は出力直前に URDF 可動域へクランプする（NFR-4）。
 
 ---
 
@@ -171,7 +210,7 @@ class FeedbackRenderer(Protocol):
 | スレッド | 周期 | 役割 |
 |---|---|---|
 | Audio | コールバック | マイク取得 → ring buffer へ書き込み |
-| Perception | 可変（重い） | BeatTracker / ArousalEstimator / VoiceEncoder |
+| Perception | 可変（重い） | ReferenceAligner（主軸） / ArousalEstimator / VoiceEncoder。参照が無い時のみ BeatTracker（フォールバック） |
 | Control loop | 固定 30–50 Hz | 最新の GrooveContext で生成 → backend へ送出 |
 
 知覚（重い・可変遅延）と制御（軽い・固定レート）を**疎結合**にし、制御ループは常に
@@ -186,8 +225,9 @@ class FeedbackRenderer(Protocol):
 | 送出・サーボ整定 | ≤ 30 ms |
 
 ### 6.3 同期方針
-タイミングは BeatTracker（声から頑健に取れる拍位相）が支配し、GrooveGenerator は
-スタイル・質感のみを担う（設計リスク#2への対策）。
+タイミングは **ReferenceAligner**（ユーザ選択曲の参照拍グリッド）が支配し、
+GrooveGenerator はスタイル・質感のみを担う（設計リスク#2への対策、§14）。
+参照が無い場合に限り BeatTracker（盲目フォールバック）がタイミングを担う。
 
 ---
 
@@ -221,10 +261,11 @@ VQ-VAE のノリ・コードブック ＋ 条件付き Transformer（beat_phase 
 ## 9. 開発フェーズとモジュール対応
 | フェーズ | 内容 | 主に触るモジュール |
 |---|---|---|
-| M0 | 歌声/鼻歌で拍追跡が壊れる箇所を把握 | AudioInput, BeatTracker |
-| M1 | メトロノーム＋手付けノリで端到端を通す（**現行コード**） | Orchestrator, GrooveGenerator(規則), RobotBackend |
-| M2（必達） | 声→テンション、画面フィードバック | ArousalEstimator, FeedbackRenderer |
-| M3（目標） | 学習モデルでノリ生成 | VoiceEncoder, GrooveGenerator(モデル) |
+| ~~M0~~ | （棚上げ）盲目オンライン拍追跡（BeatNet/madmom）の評価。Colab/madmom 互換問題で死に筋、§10.2 副次へ降格 | （棚上げ：`tools/eval_beat.py`, `experiments/run_gtzan_eval.py` は残置） |
+| **M0'** | **小規模な参照曲セットの作成 + オフラインで歌唱/鼻歌を参照拍グリッドへ整合できるかの実現性検証**。既知曲に対して歌唱/鼻歌をどれだけ整合させて拍グリッドを復元できるかを `mir_eval` ハーネス（F/CMLt/AMLt、流用）で測る。madmom 不要 | SongReference 作成スクリプト, オフライン整合プロトタイプ（DTW で可）, `tools/eval_beat.py`（指標流用） |
+| M1 | メトロノーム＋手付けノリで端到端を通す（**完了**） | Orchestrator, GrooveGenerator(規則), RobotBackend |
+| **M2（必達）** | オンライン `ReferenceAligner` を Orchestrator の Perception に接続 + arousal 推定 + 顔/画面フィードバック | ReferenceAligner, ArousalEstimator, FeedbackRenderer |
+| **M3（目標）** | 拍/小節頭/**曲構造**/arousal/voice-embedding で条件付けした学習 groove 生成（AIST++ vocal 分離）。曲構造から「次サビ来る」を予期した先読みのノリ | VoiceEncoder, GrooveGenerator(モデル) |
 
 ---
 
@@ -237,32 +278,46 @@ VQ-VAE のノリ・コードブック ＋ 条件付き Transformer（beat_phase 
 - 身体非依存性: 同一の脳が MuJoCo / PyBullet 双方で動く回帰テスト。
 
 ### 10.2 研究評価
-- **客観（同期精度）**: 被験者にイヤホンでクリックを聴かせて歌わせ、その拍グリッドを正解として
-  ロボ動作のズレを F値 / CMLt / AMLt で測定（`tools/eval_beat.py --bpm`）。
+#### 主指標 — アライメント精度（主軸）
+**「`ReferenceAligner` が参照拍グリッドをどれだけ復元できるか」** を中心に置く。
+参照側の拍注釈を正解、`ReferenceAligner.update()` が返す `beat_pos` から再構成した
+拍時刻列を推定値として F値 / CMLt / AMLt を計算する（指標と計算ハーネスは既存の
+`tools/eval_beat.py --beats` を流用）。RT-factor（壁時計処理時間 / 音源時間、≤1.0 が
+realtime 可）も同じハーネスで取得する。
+
+- **客観（同期精度）**: 被験者にイヤホンでクリックを聴かせて歌わせ、その拍グリッドを
+  正解として、`ReferenceAligner` が追従した参照拍グリッドのズレを測定。
+  （`tools/eval_beat.py --bpm` ／ `--beats`）。
 - **公開データ方式（SOTA 比較可能・録音前から走らせられる）**: 拍注釈付き公開データを
-  Demucs でボーカル分離し、元曲の拍注釈をそのまま正解として評価する
-  （`tools/eval_beat.py --beats <annotation.txt>`、`tools/prep_dataset.py` が前処理を担当）。
-  これは「我々の楽曲に対する拍 GT は声の側にも継承する」というアカペラ拍追跡研究の標準手口で、
-  我々の手元録音が無くても評価ループが回せる。
-  - **拍注釈ありポップ/ロック/混合ジャンル**（一次評価。SOTA 値と直接比較）
+  **そのまま `SongReference` として使う**。歌唱/鼻歌（任意音源）を整合し、参照拍グリッドを
+  正解として整合精度を測る（録音が無くても評価ループが回せる）。
+  - **拍注釈あり楽曲データセット**（一次評価。SOTA 値と直接比較）
       - **GTZAN-Rhythm (Marchand & Peeters, 2015)**: 1000曲・10ジャンル、拍＋ダウンビート注釈
       - **Ballroom (Gouyon et al. 2006; ISMIR LB extended)**: 698曲、拍注釈、テンポが安定
       - **Hainsworth (Hainsworth & Macleod, 2004)**: 222曲、多ジャンル、難曲が多い
-      - **Isophonics / Beatles (Mauch et al. 2009)**: ビートルズ等、拍＋コード＋構造注釈
+      - **Isophonics / Beatles (Mauch et al. 2009)**: ビートルズ等、拍＋コード＋**構造**注釈
       - **RWC Popular (Goto et al. 2002)**: J-Pop 100曲、AIST 配布
-  - **本物アカペラ（control。Demucs を経由しない素のボーカル）**
+  - **本物アカペラ（control）**
       - **Dagstuhl ChoirSet (Rosenzweig et al. 2020)**: 多声合唱の単声ボーカル＋拍ラベル
       - **Choral Singing Dataset (Cuesta et al. 2018)**: 単声録音
-  - **鼻歌コーパス（補助。拍 GT は無いので「拍の有無」「テンポ抽出の頑健性」分析専用）**
+  - **鼻歌コーパス（アライメント側の頑健性検証）**
       - **MIR-QBSH (Jang & Lee, 2008)**: 4431件の humming/singing、旋律 MIDI GT のみ
       - **MTG-QBH (Salamon et al. 2013)**: ~120件、旋律 GT、Creative Commons
-  - **指標**（公開データ・録音とも同一）: F値（70ms 窓）、CMLt（厳格テンポ整合）、
-    AMLt（テンポ倍/半許容）、加えて RT-factor（壁時計処理時間 / 音源時間、≤1.0 が realtime 可）。
-  - **手順サマリ**: ① 公開データを取得 → ② `prep_dataset.py` が Demucs で vocal 分離し、
-    付属拍注釈を `--beats` 形式 1列 [秒] のテキストへ変換 → ③ Colab/Kaggle で
-    `eval_beat.py eval --wav vocal.wav --beats annot.beats` を走らせ、表に積む。
-- **主観（HRI）**: 同期条件 vs 非同期条件（わざと拍を外す）で、楽しさ・「合ってる感」・
-  エンゲージメントを比較。Keepon 型の対照実験設計。
+  - **指標**（公開データ・録音とも同一）: F値（70ms 窓）、CMLt、AMLt、RT-factor。
+  - **手順サマリ**: ① 公開データを取得 → ② 拍注釈を `SongReference.beats` として読み込み、
+    参照側 align_features（chroma 等）を抽出 → ③ 歌唱/鼻歌を `ReferenceAligner.update()` で
+    online 整合 → ④ 整合結果の拍時刻列を `--beats` 形式に出力 → ⑤ `eval_beat.py` で表に積む。
+
+#### 副次・棚上げ — 盲目オンラインビート追跡
+盲目モード（`BeatTracker`）の同一指標評価は副次扱い。既存の Colab パイプライン
+（`notebooks/m0_gtzan_eval.ipynb` ＋ `experiments/run_gtzan_eval.py` ＋ Demucs vocal 分離 ＋
+BeatNet/madmom）はコードとして残置するが、現時点では **棚上げ**（madmom が Python 3.10
+縛りで Colab の運用環境に乗らないため、数値化は据え置き）。フォールバック品質の参考値が
+必要になった段階で再開する。
+
+#### 主観（HRI）
+同期条件 vs 非同期条件（わざと拍を外す）で、楽しさ・「合ってる感」・エンゲージメントを
+比較。Keepon 型の対照実験設計。
 
 ---
 
@@ -270,9 +325,11 @@ VQ-VAE のノリ・コードブック ＋ 条件付き Transformer（beat_phase 
 | リスク | 対策 |
 |---|---|
 | スタイルのドメインギャップ | ターゲットを「楽しい系」に固定し AIST++ と一致させた（解消済み） |
-| 声条件 vs 音楽条件のズレ | タイミングは拍チャンネルに任せ、モデルは質感のみ（§6.3） |
+| 声条件 vs 音楽条件のズレ | タイミングは参照アライメントに任せ、モデルは質感のみ（§6.3, §14） |
+| **未知曲・即興鼻歌でアライメントが効かない** | **主軸はカラオケ（既知曲）に固定。未知曲・即興鼻歌は弱フォールバック（盲目 `BeatTracker`、§14.3）のみで、性能は保証しない。HRI 評価でも既知曲条件のみを主軸とする** |
 | 鼻歌が音声SSLの土俵外 | 歌唱 vs 鼻歌のアブレーション、音高/エネルギー特徴を併用 |
 | ハードが間に合わない | 身体非依存設計。評価は既存ロボ（Pepper等）で代替可能 |
+| 盲目拍追跡の依存（madmom）が壊れる | フォールバック扱いに降格済（§14.3）。本系の品質は影響を受けない |
 
 ---
 
@@ -297,32 +354,70 @@ docs/SYSTEM_SPEC.md         本書
 - **causal/online**: 未来を見ずに逐次処理すること（リアルタイムの必須条件）。
 - **retarget**: 人体骨格の動きをロボの関節構成へ写し替えること。
 - **ports & adapters**: 中核ロジックを外部実装から隔離する設計（脳/身体分離）。
+- **ReferenceAligner**: 本システム主軸の知覚モジュール。ユーザ選択曲の参照タイムラインへ
+  歌声を online 整合し、参照側の `beat_pos / downbeat / tempo / section` を出力する（§5.2, §14）。
+- **SongReference**: 曲ごとの参照データ（拍時刻列・小節頭・曲構造ラベル・アライメント用
+  参照特徴）。`ReferenceAligner.load()` の入力（§5.1）。
+- **online alignment**: 過去入力のみから参照タイムラインへ追従する整合。online DTW
+  (MATCH/Dixon) / score following (Antescofo, Music Plus One) が代表（§14）。
+- **盲目（blind）ビート追跡**: 参照なしで音声のみから拍を抽出する古典手法。本書では
+  未知曲・即興鼻歌向けの**フォールバック**扱い（§14.3）。
 
 ---
 
-## 14. 参照情報つきビート追跡（将来拡張 / Reference-informed beat tracking）
+## 14. 参照情報つきアライメント（主軸 / Reference-informed alignment）
 
-### 14.1 動機
-アカペラ/鼻歌に対する盲目的（bottom-up）なビート追跡は不確実（特に鼻歌は拍が無いことが多い）。
-一方ターゲットはカラオケ＝既知曲なので、曲を特定し、その参照曲の信頼できる拍グリッドを
-オンラインアライメントで継承すれば、確実性が大きく上がる。タイミングを弱い入力信号ではなく
-参照から得るため、鼻歌に拍が立っていなくても同期できる。
+### 14.1 位置付け
+本システムの**主軸の知覚**である。ターゲットはカラオケ＝既知曲なので、曲ごとに用意した
+参照タイムライン（`SongReference`）へ歌声を online 整合し、参照側の信頼できる拍グリッド・
+小節頭・曲構造を継承する。タイミングを「弱い歌声から拍を再抽出する」ではなく
+「外部の確かな参照から得る」設計に倒すことで、鼻歌で拍が立っていなくても同期できる。
 
-### 14.2 ハイブリッド構成（BeatTracker 層の内部で完結。§5.2 の契約は不変）
-- **参照モード（主系）**: 曲特定（QBH/旋律照合）→ 参照タイムラインへ online alignment
-  （online DTW / score following）→ 拍グリッド・小節頭・楽曲構造を継承。
-- **盲目モード（フォールバック）**: M0 の歌声ビート追跡。コールドスタート・低信頼・未知曲で使用。
-- **信頼度ゲート**で両モードを切替（誤特定＝「自信満々に誤った拍」を防ぐ閾値とフォールバック）。
+> 旧版（v0.1 初版）はこの節を「将来拡張」として扱い、M0 で盲目オンライン拍追跡
+> （BeatTracker / BeatNet）を主軸ベースラインとしていた。本版で主従を入れ替えた。
+> 理由: (a) madmom（BeatNet の必須依存）が Python 3.10 縛りで Colab/Kaggle
+> （≥3.11）に乗らず実運用が困難、(b) カラオケ標的では参照アライメントの方が
+> 堅牢かつ「楽曲構造を使った先読みのノリ」など下流の表現が豊か。
 
-### 14.3 制約・留意
-- NFR-2 を維持（offline DTW 不可、online のみ）。
-- クラシック等（rubato・レパートリー曖昧）は弱点。カラオケ用途ではスコープ外として許容。
-- 音源分離ブートストラップは「参照DBの構築」と「盲目トラッカーの学習」の双方に再利用。
+### 14.2 構成（`ReferenceAligner` 層の内部で完結。§5.2 の下流契約は不変）
+1. ユーザが曲名／曲 ID で選曲（カラオケ的 UX）。
+2. その曲の `SongReference`（拍時刻・小節頭・曲構造ラベル・アライメント用参照特徴系列）
+   を事前計算データから読み込む。
+3. マイクの生フレームから同種の特徴（chroma / pYIN melody / vocal SSL など）を online に
+   抽出し、online DTW（MATCH/Dixon 系）または score following（Antescofo 系）で参照
+   タイムライン上の現在位置を更新する。
+4. 現在位置 → `beat_pos / downbeat / tempo / section` を `GrooveContext` へ流す。
 
-### 14.4 副産物
-楽曲構造（サビ・ビルドアップ・ドロップ）を取得できるため、「次サビが来る」を予期した
-先読みのノリ（anticipatory grooving）が可能になる。盲目追跡では不可能な音楽的表現。
+### 14.3 フォールバック（盲目オンラインビート追跡）
+参照が無い場合 — 未知曲・即興鼻歌・参照ロード未完 — のみ、`BeatTracker`（SingNet /
+mjhydri / BeatNet 系）で歌声から盲目に拍を推定する。
+- 性能は保証しない（リスク §11）。
+- 既存の Colab/Kaggle 評価パイプライン（`tools/eval_beat.py`, `experiments/run_gtzan_eval.py`,
+  `notebooks/m0_gtzan_eval.ipynb`、Demucs vocal 分離 ＋ BeatNet）はコードとして残置するが、
+  madmom 互換問題により**棚上げ**（§10.2 副次）。フォールバック品質の参考値が必要に
+  なった段階で再開する。
+- Orchestrator は参照モード優先、参照が無い／信頼度低の時のみフォールバックに切替。
 
-### 14.5 段取り
-盲目トラッカー（M0）をフォールバック兼ベースラインとして先に完成 → 参照モードは後段フェーズ。
-関連: score following / 自動伴奏（Antescofo, Music Plus One）, online DTW（MATCH/Dixon）, QBH。
+### 14.4 簡略化（曲選択 UX の効用）
+- **自動曲識別（QBH / 旋律照合）は当面不要**。ユーザが曲を選ぶ前提なので、識別の不確実性と
+  「自信満々に誤った拍」リスクを丸ごと回避できる。将来 UX 上必要になった段階で追加検討。
+- 信頼度ゲートも、当面は「ユーザ選曲モード」vs「フォールバック」の二択でよい（細かい
+  曲内チャネル切替は後段）。
+
+### 14.5 制約・留意
+- **NFR-2 を維持**: offline DTW は禁止、online DTW / score following のみ。過去出力を
+  訂正しない。
+- クラシック等（rubato 強い・レパートリー曖昧）は弱点。カラオケ用途ではスコープ外として許容。
+- 参照側の事前計算（拍注釈・align_features の抽出）はオフラインで自由に重い処理を使ってよい。
+  リアルタイム制約は live 側のみ。
+
+### 14.6 副産物
+`SongReference.sections` から「次サビが来る」を予期した先読みのノリ
+（anticipatory grooving）が可能になる（M3）。盲目追跡では不可能な音楽的表現。
+
+### 14.7 段取り
+**M0'**: 小規模な参照曲セット作成 + オフライン整合の実現性検証（既知曲に対して歌唱/鼻歌を
+DTW で整合し、参照拍グリッドの復元率を `mir_eval` で測る、§10.2 主指標）。→
+**M2**: オンライン `ReferenceAligner` を Orchestrator の Perception スレッドに接続。→
+**M3**: 拍/構造/arousal/voice-embedding で条件付けした学習 groove 生成。
+関連先行研究: online DTW（MATCH/Dixon）, score following / 自動伴奏（Antescofo, Music Plus One）。
