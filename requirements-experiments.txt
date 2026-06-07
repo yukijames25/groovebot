@@ -11,3 +11,7 @@
 
 # Online beat tracker (mjhydri/BeatNet) — pulls torch + librosa + madmom.
 BeatNet>=1.1.0
+
+# Vocal separation for the public-data evaluation path (spec §10.2,
+# tools.prep_dataset.separate_vocal). Pulls torch + diffq.
+demucs>=4.0.0

@@ -141,6 +141,34 @@ def _require_demucs():
         raise RuntimeError(_DEMUCS_INSTALL_HINT) from e
 
 
+def _find_vocal_output(out_root: Path, model: str, in_stem: str) -> Path:
+    """Locate Demucs's vocals.wav for an input named `<in_stem>.wav`.
+
+    Canonical layout (Demucs 4.x): `<out_root>/<model>/<in_stem>/vocals.wav`.
+
+    Fallback: GTZAN audio stems contain a dot (`blues.00000`) which Demucs
+    has been observed to either preserve or rewrite (e.g. to `blues_00000`).
+    So if the canonical path is missing, scan `<out_root>/<model>` (or the
+    whole `out_root` if the model dir is absent) for any `vocals.wav` whose
+    parent directory name matches the stem or its dot-to-underscore variant.
+    """
+    canonical = out_root / model / in_stem / "vocals.wav"
+    if canonical.exists():
+        return canonical
+    search_root = out_root / model if (out_root / model).exists() else out_root
+    variants = {in_stem, in_stem.replace(".", "_")}
+    for cand in search_root.rglob("vocals.wav"):
+        if cand.parent.name in variants:
+            return cand
+    raise RuntimeError(
+        f"Demucs ran but vocals.wav was not found.\n"
+        f"  expected: {canonical}\n"
+        f"  searched: {search_root} (recursive)\n"
+        f"  variants tried for parent-dir match: {sorted(variants)}\n"
+        f"Check the model name ({model!r}) and the output layout."
+    )
+
+
 def separate_vocal(in_wav: str, out_dir: str, model: str = "htdemucs") -> str:
     """Run Demucs (two-stems: vocals) and return the path to vocals.wav.
 
@@ -148,9 +176,10 @@ def separate_vocal(in_wav: str, out_dir: str, model: str = "htdemucs") -> str:
     Colab/Kaggle notebook calls it after `pip install -r requirements-
     experiments.txt`.
 
-    Demucs writes to `<out_dir>/<model>/<track_stem>/vocals.wav` (and
-    `other.wav` for the rest); we mirror that contract here so callers know
-    where to look.
+    Demucs canonically writes to `<out_dir>/<model>/<track_stem>/vocals.wav`
+    (with `other.wav` for the rest). When the input stem contains a dot
+    (GTZAN's `blues.00000`) some Demucs versions rewrite the subdir name, so
+    we use `_find_vocal_output` to locate it robustly.
     """
     sep = _require_demucs()       # local: RuntimeError with install hint.
     in_path = Path(in_wav)
@@ -162,13 +191,7 @@ def separate_vocal(in_wav: str, out_dir: str, model: str = "htdemucs") -> str:
         "-o", str(out_root),
         str(in_path),
     ])
-    vocals = out_root / model / in_path.stem / "vocals.wav"
-    if not vocals.exists():
-        raise RuntimeError(
-            f"Demucs ran but vocals.wav was not found at {vocals}. "
-            f"Check the model name ({model!r}) and the output layout."
-        )
-    return str(vocals)
+    return str(_find_vocal_output(out_root, model, in_path.stem))
 
 
 # --------------------------------------------------------------------------- #

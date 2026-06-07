@@ -29,7 +29,11 @@
       "Bash(python -m tools.eval_beat eval --help)",
       "Bash(python -m tools.prep_dataset convert-ann --help)",
       "Bash(python -m tools.prep_dataset separate --help)",
-      "Bash(python -m tools._build_m0_notebook)"
+      "Bash(python -m tools._build_m0_notebook)",
+      "Bash(git rev-list *)",
+      "Bash(git check-ignore *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

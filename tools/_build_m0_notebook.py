@@ -118,13 +118,12 @@ if not os.path.isdir(REPO_NAME):
     # 5 — Install requirements
     cells.append(code("""\
 # Core + experiments deps. requirements.txt is light; requirements-experiments
-# brings in torch + BeatNet + madmom (heavy).
+# brings in BeatNet (-> torch + madmom + librosa) + Demucs (-> torch + diffq).
 !pip install -q -r requirements.txt
 !pip install -q -r requirements-experiments.txt
-# Demucs lives in its own wheel; install it alongside (also heavy).
-!pip install -q demucs
 
-# Smoke-check: every import we need should succeed.
+# Smoke-check: every import we need should succeed. A failure here is much
+# easier to diagnose than a NameError 20 minutes into the run.
 import importlib, sys
 for mod in ("mir_eval", "soundfile", "matplotlib", "numpy",
             "BeatNet", "demucs", "torch"):
@@ -224,7 +223,7 @@ from experiments.run_gtzan_eval import VOCAL_GENRES, run_pipeline
 print(f"genres: {VOCAL_GENRES}")
 print(f"per-genre limit: {PER_GENRE_LIMIT}")
 
-results = run_pipeline(
+report = run_pipeline(
     audio_root=AUDIO_ROOT,
     annotation_root=ANN_DIR,
     work_dir=WORK_DIR,
@@ -232,8 +231,11 @@ results = run_pipeline(
     per_genre_limit=PER_GENRE_LIMIT,
     verbose=True,
 )
-print(f"\\ncompleted: {len(results)} tracks "
-      f"({sum(1 for r in results if r.error)} errored)")"""))
+# Always print the full stage breakdown — even (especially!) when zero
+# tracks survived. This is how we caught the n_tracks=0 incident on
+# 2026-06-07: pre-loop annotation mismatch was invisible until exposed here.
+print()
+print(report.summary())"""))
 
     # 13 — Aggregation markdown
     cells.append(md("""\
@@ -255,11 +257,11 @@ even when the absolute beat positions are sane."""))
 from experiments.run_gtzan_eval import aggregate, save_csv, to_dataframe
 import pandas as pd
 
-per_genre, overall = aggregate(results)
+per_genre, overall = aggregate(report)
 df = to_dataframe(per_genre, overall)
 
 CSV_PATH = WORK_DIR / "m0_per_track.csv"
-save_csv(results, CSV_PATH)
+save_csv(report, CSV_PATH)
 print(f"per-track CSV: {CSV_PATH}")
 
 # Display the summary table inline. `display` is Colab/Jupyter built-in.
@@ -270,7 +272,17 @@ display(df.style.format({
     "rt_mean": "{:.2f}",
 }).set_caption("M0 — BeatNet (online) on GTZAN vocal-heavy genres"))
 
-df.to_csv(WORK_DIR / "m0_summary.csv", index=False)"""))
+df.to_csv(WORK_DIR / "m0_summary.csv", index=False)
+
+# Drop diagnostics. If anything fell out, we want it visible RIGHT NEXT TO
+# the (possibly small or zero) summary table — no scrolling required.
+if report.drops:
+    drops_df = pd.DataFrame(report.drops,
+                            columns=["track_id", "stage", "error"])
+    by_stage = drops_df["stage"].value_counts().to_dict()
+    print(f"\\ndrops by stage: {by_stage}")
+    display(drops_df.head(20))
+    drops_df.to_csv(WORK_DIR / "m0_drops.csv", index=False)"""))
 
     # 15 — Closing notes
     cells.append(md(f"""\
