@@ -3,13 +3,28 @@
 # don't need them locally — local just runs the M1 demo + the M0 harness
 # smoke tests, both of which are BeatNet-free).
 #
-# Usage:
-#   !pip install -r requirements-experiments.txt        # Colab/Kaggle cell
+# Usage (Colab/Kaggle cell):
+#   !pip install -q "numpy==1.26.4" cython
+#   !pip install -q -r requirements-experiments.txt
+#
+# Why numpy is pinned <2: madmom (BeatNet's transitive dep, last release 0.16.1)
+# does not build/import under numpy 2.x. Colab ships numpy 2.x by default, so
+# we downgrade *before* installing the rest. cython is required to build madmom
+# from sdist on platforms without a wheel.
 #
 # After install, `tools/eval_beat.py eval --wav ... --bpm ...` works end-to-end
 # (it imports BeatTrackerPerception which lazily pulls BeatNet).
 
+# Pin numpy <2 — required by madmom 0.16.1 (BeatNet transitive dep).
+# Demucs + torch run fine on numpy 1.26 (verified on Colab 2026-06-08).
+numpy==1.26.4
+
+# Build prerequisite for madmom (cython compiles its .pyx modules).
+cython
+
 # Online beat tracker (mjhydri/BeatNet) — pulls torch + librosa + madmom.
+# If PyPI madmom fails to build, swap the dep for the git head:
+#   madmom @ git+https://github.com/CPJKU/madmom.git
 BeatNet>=1.1.0
 
 # Vocal separation for the public-data evaluation path (spec §10.2,

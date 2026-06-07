@@ -83,10 +83,14 @@ imported lazily on first use.
 1. **Runtime → Change runtime type → GPU.** Demucs and BeatNet will be
    painfully slow on CPU. The notebook still runs without one; expect long
    waits.
-2. Adjust **`PER_GENRE_LIMIT`** in the config cell below if you want more or
+2. Run all cells. The install cell may **restart the runtime once** to pick
+   up numpy 1.26 (madmom — a BeatNet dep — can't run on numpy 2.x). If you
+   see the restart message, just click **「すべてを実行 / Run all」** again
+   after it reconnects. This only ever happens once per fresh runtime.
+3. Adjust **`PER_GENRE_LIMIT`** in the config cell below if you want more or
    fewer tracks per genre. The default (5) gives 35 tracks total and runs in
    roughly 20–30 minutes on a T4.
-3. *(Only if the gtzan_mini path fails)* upload `kaggle.json` when prompted
+4. *(Only if the gtzan_mini path fails)* upload `kaggle.json` when prompted
    so the Kaggle fallback can fetch the audio.
 
 Everything else runs unattended."""))
@@ -115,23 +119,70 @@ if not os.path.isdir(REPO_NAME):
 %cd {{REPO_NAME}}
 !git rev-parse --short HEAD"""))
 
-    # 5 — Install requirements
+    # 5 — Install requirements (markdown explaining the one-time restart)
+    cells.append(md("""\
+## Install dependencies (may restart the runtime once)
+
+The next cell pins **numpy 1.26.4** before installing BeatNet, because
+`madmom` 0.16.1 — BeatNet's transitive dep — does not build/import on
+numpy 2.x (which is Colab's current default).
+
+If your runtime is still holding numpy 2 in memory after the install,
+the cell will trigger **a one-time kernel restart** (`os.kill(pid, 9)`)
+and print a message asking you to click **「すべてを実行 / Run all」**
+again. A marker file under `/tmp/` prevents this from looping.
+
+On the second pass numpy is already 1.26 and the install cell completes
+without restarting."""))
+
+    # 6 — Install code cell: numpy pin → reqs → kernel restart guard → smoke
     cells.append(code("""\
-# Core + experiments deps. requirements.txt is light; requirements-experiments
-# brings in BeatNet (-> torch + madmom + librosa) + Demucs (-> torch + diffq).
+# Install order:
+#   1) numpy 1.26.4 + cython BEFORE BeatNet / madmom. madmom 0.16.1 cannot
+#      build or import on numpy 2.x; cython is needed to compile its .pyx.
+#   2) requirements.txt (light core deps).
+#   3) requirements-experiments.txt (BeatNet + Demucs ...). The numpy pin
+#      in that file keeps pip from re-upgrading numpy.
+# After install we check the *running kernel's* numpy. pip downgrades the
+# on-disk package but already-imported numpy stays in memory, so we may
+# need a one-time kernel restart for the new numpy to take effect.
+!pip install -q "numpy==1.26.4" cython
 !pip install -q -r requirements.txt
 !pip install -q -r requirements-experiments.txt
 
-# Smoke-check: every import we need should succeed. A failure here is much
+import os
+from pathlib import Path
+import numpy
+
+_RESTART_MARKER = Path("/tmp/groovebot_numpy_restart.marker")
+if numpy.__version__.startswith("2."):
+    if _RESTART_MARKER.exists():
+        # We already restarted once and numpy is still 2.x — the downgrade
+        # itself didn't take. Don't loop; surface the real failure.
+        raise RuntimeError(
+            f"numpy is still {numpy.__version__} after a runtime restart. "
+            "The pip downgrade did not take effect; check the install "
+            "output above for errors."
+        )
+    _RESTART_MARKER.write_text("1")
+    print(
+        f"numpy is {numpy.__version__} in the running kernel; restarting "
+        "once so numpy 1.26 takes effect.\\n"
+        "Re-run 「すべてを実行 / Run all」 after the kernel reconnects."
+    )
+    os.kill(os.getpid(), 9)
+
+# numpy is <2. Smoke-check every import we need — a failure here is much
 # easier to diagnose than a NameError 20 minutes into the run.
-import importlib, sys
-for mod in ("mir_eval", "soundfile", "matplotlib", "numpy",
-            "BeatNet", "demucs", "torch"):
-    try:
-        importlib.import_module(mod.split(".")[0])
-        print(f"  ok  {mod}")
-    except Exception as e:
-        print(f"  FAIL  {mod}: {e}", file=sys.stderr)"""))
+import importlib
+print(f"  ok  numpy {numpy.__version__}")
+for mod in ("mir_eval", "soundfile", "matplotlib", "demucs", "torch"):
+    importlib.import_module(mod)
+    print(f"  ok  {mod}")
+# BeatNet is the failure mode we just fixed; import it explicitly so any
+# regression (numpy / madmom / cython) is caught right here, not silently.
+from BeatNet.BeatNet import BeatNet  # noqa: F401
+print("  ok  BeatNet")"""))
 
     # 6 — Data fetch markdown
     cells.append(md("""\
