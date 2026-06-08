@@ -1,0 +1,16 @@
+"""groovebot.align — offline alignment primitives for M0' Tier 1 (spec §9.x).
+
+This package is intentionally librosa-only: no madmom, no torch, no Demucs.
+It runs on the Windows dev laptop so the alignment feasibility check is local
+and fast. Online alignment (M2's `ReferenceAligner`) will share the feature
+pipeline in `features.py` but use a different aligner (online DTW /
+score-following), see spec §14.
+"""
+from groovebot.align.dtw_align import OfflineDTWAligner, map_reference_beats
+from groovebot.align.features import extract_align_features
+
+__all__ = [
+    "OfflineDTWAligner",
+    "extract_align_features",
+    "map_reference_beats",
+]

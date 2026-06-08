@@ -267,6 +267,27 @@ VQ-VAE のノリ・コードブック ＋ 条件付き Transformer（beat_phase 
 | **M2（必達）** | オンライン `ReferenceAligner` を Orchestrator の Perception に接続 + arousal 推定 + 顔/画面フィードバック | ReferenceAligner, ArousalEstimator, FeedbackRenderer |
 | **M3（目標）** | 拍/小節頭/**曲構造**/arousal/voice-embedding で条件付けした学習 groove 生成（AIST++ vocal 分離）。曲構造から「次サビ来る」を予期した先読みのノリ | VoiceEncoder, GrooveGenerator(モデル) |
 
+### 9.x M0' 詳細: 参照アライメントの実現性検証
+目的: 既知曲の参照に、その曲の歌唱/鼻歌をオフラインで整合させ、参照の拍グリッドを
+どれだけ復元できるかを測る。madmom不要・GPU不要・CPUで完結(ローカル実行可)。
+
+特徴量: 歌唱=クロマ(chromagram)既定／鼻歌=音高コンター(F0; pyin)既定(単旋律のため)。
+  feature_fn は差し替え可能。
+アライメント: オフラインDTW(librosa.sequence.dtw)で query↔reference の特徴量列を整合 →
+  ワーピングパス → 参照拍を query タイムラインへ写像し復元拍を得る。
+  (オンライン化(OLTW/score-following)は M2。NFR-2 はオンライン要件で、M0' はオフライン検証)
+評価: 復元拍を既存 mir_eval ハーネス(F/CMLt/AMLt)で正解グリッドと照合。
+
+Tier 1(最初・完全クリーン・新規DLや録音なし):
+  参照音声+拍グリッドに既知のテンポ変動(time-stretch; 一定倍率集合→任意で区分的)をかけ query を生成 →
+  DTWで整合 → 既知の正解ワープに対し拍復元精度を採点。アライメント機構とテンポ耐性を検証。
+  注: 自己ワープのため楽観値(機構検証であり別人歌唱の難しさは測れない)。
+  データ: 手持ちGTZAN-Rhythmのボーカル多めジャンルを数曲(全曲そのまま、または一度だけDemucsでボーカル分離)。MUSDB18(CC)も可。
+Tier 2(Tier 1通過後・本物の頑健性):
+  同曲の別演奏(別人の歌唱/鼻歌)を参照に整合。データはライセンス済みカラオケ/カバー研究データを優先。
+著作権/規約: 音源は data/(gitignore済)にローカル保持。再配布(commit/push)しない。YouTube等を使う場合も
+  data/ ローカル限定・分析専用・公開リポジトリへ絶対コミットしない。
+
 ---
 
 ## 10. テスト・評価
@@ -307,6 +328,13 @@ realtime 可）も同じハーネスで取得する。
   - **手順サマリ**: ① 公開データを取得 → ② 拍注釈を `SongReference.beats` として読み込み、
     参照側 align_features（chroma 等）を抽出 → ③ 歌唱/鼻歌を `ReferenceAligner.update()` で
     online 整合 → ④ 整合結果の拍時刻列を `--beats` 形式に出力 → ⑤ `eval_beat.py` で表に積む。
+
+- **M0' オフライン採点パス（実装）**: §9.x の M0' Tier 1 では、`groovebot/align/dtw_align.py`
+  のオフライン DTW が出した復元拍を `tools/eval_beat.py` の `score_beats()`（mir_eval ベース、
+  F値 / CMLt / AMLt）にそのまま渡して採点する。スコアラは盲目モードと共有なので、参照
+  アライメントと盲目モードを**同一指標**で並べられる。M0' の集計 runner は
+  `experiments/run_m0p_align.py`。Tier 1 は合成 time-stretch（既知ワープ）を query 側に
+  かけるため、機構検証としては楽観値（§9.x 注意書き参照）。
 
 #### 副次・棚上げ — 盲目オンラインビート追跡
 盲目モード（`BeatTracker`）の同一指標評価は副次扱い。既存の Colab パイプライン

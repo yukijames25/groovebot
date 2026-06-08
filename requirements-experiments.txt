@@ -1,22 +1,33 @@
-# GrooveBot — experiment-side deps. Install in Colab / Kaggle, NOT on the
-# Windows dev laptop (madmom + torch are painful to install on Windows, and we
-# don't need them locally — local just runs the M1 demo + the M0 harness
-# smoke tests, both of which are BeatNet-free).
+# GrooveBot — experiment-side deps.
 #
-# Usage (Colab/Kaggle cell):
-#   !pip install -q "numpy==1.26.4" cython
-#   !pip install -q -r requirements-experiments.txt
+# Two install profiles:
+#   (1) Local (Windows / mac, CPU): just install librosa. It is enough to run
+#       the M0' Tier 1 alignment pipeline (groovebot/align/* + tools/synth_warp.py
+#       + experiments/run_m0p_align.py). No torch, no madmom required.
+#         pip install librosa
+#   (2) Colab / Kaggle (the heavy stack, with the blind beat-tracking path):
+#         !pip install -q "numpy==1.26.4" cython
+#         !pip install -q -r requirements-experiments.txt
+#       This includes BeatNet + Demucs and is currently shelved (see spec §14.3
+#       and CLAUDE.md): madmom 0.16.1 needs Python < 3.10 and numpy < 2, both
+#       of which conflict with current Colab. Code is retained for fallback
+#       experiments.
 #
 # Why numpy is pinned <2: madmom (BeatNet's transitive dep, last release 0.16.1)
 # does not build/import under numpy 2.x. Colab ships numpy 2.x by default, so
 # we downgrade *before* installing the rest. cython is required to build madmom
 # from sdist on platforms without a wheel.
-#
-# After install, `tools/eval_beat.py eval --wav ... --bpm ...` works end-to-end
-# (it imports BeatTrackerPerception which lazily pulls BeatNet).
+
+# MIR feature extraction (chroma, pyin, time_stretch) and offline DTW used by
+# the M0' alignment pipeline. Runs CPU-only, no torch / madmom needed, and is
+# safe to install on the Windows dev laptop. Required for groovebot/align/* +
+# tools/synth_warp.py + experiments/run_m0p_align.py.
+librosa>=0.10
 
 # Pin numpy <2 — required by madmom 0.16.1 (BeatNet transitive dep).
 # Demucs + torch run fine on numpy 1.26 (verified on Colab 2026-06-08).
+# librosa runs fine on numpy 2.x locally; this pin only bites when you install
+# the full Colab profile alongside it.
 numpy==1.26.4
 
 # Build prerequisite for madmom (cython compiles its .pyx modules).

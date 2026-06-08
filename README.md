@@ -24,19 +24,22 @@ source of truth ("the contract") that both the sim and the physical robot obey.
 
 ## Roadmap
 
-- **M0** *(this iteration)* Perception reality check. Run BeatNet on your own
-  a cappella + humming, score with F/CMLt/AMLt, see where it breaks. Pure
-  audio — no robot. See the **M0 — beat-tracking reality check** section
-  below for the harness and recording protocol.
-- **M1** *(this scaffold)* End-to-end loop with a metronome + hand-authored
-  groove. Proves the whole pipeline runs. `python demo_groove.py`.
-- **M2** *(required)* Replace the constant `energy` with arousal estimated from
-  the singer's voice (energy envelope + pitch). Replace the metronome with the
-  live beat tracker from M0.
-- **M3** *(goal)* Replace `GrooveController` with a trained generative model: a
-  VQ-VAE groove codebook, sequenced by a transformer conditioned on
-  beat-phase + arousal + voice embedding, trained on vocal-separated AIST++.
-  See `train/PIPELINE.md`.
+- **~~M0~~** *(shelved — see `docs/SYSTEM_SPEC.md` §14.3)* Blind online beat
+  tracking on a cappella + humming (BeatNet). Kept as fallback code only;
+  not the primary perception path anymore.
+- **M0'** *(this iteration)* Reference-alignment feasibility — pick a known
+  song, time-stretch its audio (synth_warp), run offline DTW, score how
+  well the reference beat grid is recovered. Local, CPU, librosa-only.
+  See the **M0' — alignment feasibility check** section below.
+- **M1** *(done)* End-to-end loop with a metronome + hand-authored groove.
+  `python demo_groove.py`.
+- **M2** *(required)* Wire an online `ReferenceAligner` (online DTW /
+  score following) into the orchestrator's perception thread; add arousal
+  estimation + screen/face feedback.
+- **M3** *(goal)* Trained generative groove: a VQ-VAE groove codebook
+  sequenced by a transformer conditioned on beat-phase + downbeat +
+  **song structure** + arousal + voice embedding, trained on
+  vocal-separated AIST++. See `train/PIPELINE.md`.
 
 ## The three plug-in seams
 
@@ -93,7 +96,83 @@ python demo_groove.py --backend mujoco --bpm 120 --energy 0.85 --seconds 8
 pytest
 ```
 
-## M0 — beat-tracking reality check (a cappella + humming)
+## M0' — alignment feasibility check (local, CPU, librosa-only)
+
+> Primary perception path per the post-pivot spec (§9.x and §14). See the
+> shelved M0 section below for the older blind-tracking flow we kept around
+> as a fallback.
+
+Goal: prove that **offline DTW alignment can recover a reference song's beat
+grid from a warped query**. We synthesise the query by time-stretching the
+reference at known rates, so we have ground truth without recording anything.
+
+**What runs:**
+
+- `groovebot/align/features.py` — chroma or pyin-pitch features (12 × T).
+- `groovebot/align/dtw_align.py` — `OfflineDTWAligner` (librosa DTW) + a
+  `map_reference_beats` helper that pulls reference beats through the warp
+  path onto the query timeline.
+- `tools/synth_warp.py` — applies time-stretch rates to a wav and outputs
+  the warped audio + warped beat annotations.
+- `experiments/run_m0p_align.py` — runs the full sweep and writes per-track
+  / per-rate / overall CSVs plus per-track overlay PNGs.
+
+Scoring reuses the same `mir_eval` harness as the blind path
+(`tools/eval_beat.py::score_beats`), so M0' numbers and M0 numbers (when
+revived) sit in the same table.
+
+**Data prep**
+
+1. Pick a small set of references (≥10 s each so `mir_eval.beat.trim_beats`
+   leaves a meaningful number of beats). The repository's GTZAN-Rhythm
+   convenience scripts (`tools/prep_dataset.py`, `experiments/run_gtzan_eval.py`)
+   already discover and pair audio + `.beats` annotations.
+2. For full-mix audio it sometimes helps DTW to operate on a vocal stem.
+   Run Demucs once (Colab/Kaggle, since we don't install it locally) and
+   drop the resulting `vocals.wav` next to its `.beats`. For an initial
+   smoke pass, plain full-mix audio also works.
+3. Put everything under `data/m0p_refs/` (git-ignored) as
+   `<stem>.wav` + `<stem>.beats` neighbours.
+
+**Install + run (local, Windows / mac / Linux)**
+
+```powershell
+# Local profile only needs librosa (no torch, no madmom, no Demucs).
+pip install librosa
+
+python -m experiments.run_m0p_align `
+       --root    data/m0p_refs `
+       --out-dir data/m0p_work `
+       --feature chroma `
+       --rates 0.9 0.95 1.0 1.05 1.1
+```
+
+Outputs in `data/m0p_work/`:
+
+```
+m0p_per_track.csv     one row per (track, rate): F / CMLt / AMLt / RT-factor
+m0p_per_rate.csv      means per stretch rate
+m0p_overall.csv       overall means
+<stem>_r<rate>.png    warp path + query waveform with GT vs. recovered beats
+```
+
+Read the metrics the same way as the M0 reality check: F (70 ms window),
+CMLt (tempo-locked), AMLt (tempo-doubling forgiven), RT-factor
+(process_sec / audio_sec; offline DTW will not be ≤ 1.0, that's a tracker
+property — online alignment lands in M2).
+
+**Caveat (Tier 1)**: because the query comes from time-stretching the
+reference itself, this checks the alignment *mechanism* and tempo
+robustness only — not the harder cross-performer case. Tier 2 (different
+performer of the same song) is queued behind Tier 1 in `docs/SYSTEM_SPEC.md`
+§9.x.
+
+## ~~M0~~ — beat-tracking reality check *(shelved fallback, blind path)*
+
+> Shelved per `docs/SYSTEM_SPEC.md` §14.3 (madmom 0.16.1 doesn't build on
+> Colab's Python 3.12 + numpy 2.x stack). The code stays as the fallback
+> path for unknown songs / improvised humming; we re-enable the numbers
+> once the dependency situation untangles.
 
 Goal: run a real singing beat tracker on your own a cappella and humming, see
 where it falls over, and have numbers to point to. The tracker is
@@ -243,13 +322,18 @@ groovebot/
   orchestrator.py             fixed 30-50 Hz control loop + MetronomePerception stub
   limits.py                   URDF-derived joint limits + clamp helper (NFR-4)
   perception/
-    beat_tracker.py           BeatTrackerPerception wrapping BeatNet (M0; spec §5.2)
+    beat_tracker.py           BeatTrackerPerception wrapping BeatNet (fallback; spec §14.3)
+  align/                      M0' offline reference alignment (local, librosa-only)
+    features.py               chroma / pyin-pitch features -> (12, T) for DTW
+    dtw_align.py              OfflineDTWAligner + map_reference_beats
 tools/
-  eval_beat.py                M0 evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG)
+  eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
+  synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
   prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
   _build_m0_notebook.py       regenerates notebooks/m0_gtzan_eval.ipynb (source of truth)
 experiments/
-  run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate
+  run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate (shelved blind path)
+  run_m0p_align.py            M0' Tier 1 runner: synth_warp -> features -> DTW -> recovered beats -> score
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator
@@ -257,5 +341,5 @@ tests/                        pytest: limits, body-agnostic, orchestrator, eval,
 docs/SYSTEM_SPEC.md           the spec (the canonical reference)
 train/PIPELINE.md             the B-3 training pipeline (AIST++ → codebook → robot)
 requirements.txt              core deps (local: mujoco, mir_eval, soundfile, matplotlib, pytest)
-requirements-experiments.txt  BeatNet stack (Colab/Kaggle only)
+requirements-experiments.txt  two profiles: local (librosa for M0' alignment) + Colab/Kaggle (BeatNet + Demucs, shelved)
 ```
