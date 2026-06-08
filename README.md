@@ -163,9 +163,79 @@ property — online alignment lands in M2).
 
 **Caveat (Tier 1)**: because the query comes from time-stretching the
 reference itself, this checks the alignment *mechanism* and tempo
-robustness only — not the harder cross-performer case. Tier 2 (different
-performer of the same song) is queued behind Tier 1 in `docs/SYSTEM_SPEC.md`
-§9.x.
+robustness only — not the harder cross-performer case. Tier 2 (below)
+is the real test.
+
+## M0' Tier 2 — real renditions (singing & humming)
+
+Tier 2 swaps the self-warped query for **a different performance** of the
+same song — typically you (the user) singing or humming along while the
+original plays through earphones. That gives real timbre / micro-timing
+variation, and exposes humming's worst case (no harmonic stack, so chroma
+is noisy and pyin pitch contour has to carry the alignment).
+
+**Input layout** (one directory per song):
+
+```
+data/m0p_t2/<song>/
+  original.wav            full-mix reference (Demucs vocal stem is derived here)
+  original.beats          reference beat times (one per line, seconds)
+  rendition_sing*.wav     (any number) singing renditions  -> chroma DTW
+  rendition_hum*.wav      (any number) humming renditions  -> pyin-pitch DTW
+  rendition_*.wav         (any number) generic; defaults to chroma
+  gt.beats                ground-truth beat times for the renditions
+```
+
+The filename is what routes to the right feature: `hum` (or `humming`)
+anywhere in the basename picks the pyin melody path; anything else uses
+chroma. `gt.beats` is shared by all renditions in the dir — when you
+record along to the original, GT == `original.beats` and you can just
+copy it.
+
+**Data prep (recommended, copyright-clean)**
+
+1. Pick 2-3 songs you have legal access to. Drop the full-mix `original.wav`
+   under `data/m0p_t2/<song>/` (gitignored — never commit audio).
+2. Drop `original.beats`. For GTZAN-Rhythm you already have the annotations;
+   for anything else use the metronome / hand-tap / `tools/prep_dataset.py`.
+3. Put on earphones, play the original, record yourself singing / humming
+   on a separate channel. Save as `rendition_sing*.wav` and / or
+   `rendition_hum*.wav`. Because you sing *to* the original, the original's
+   beat grid is the rendition's ground truth — copy `original.beats` to
+   `gt.beats`.
+4. Alternative: licensed karaoke / cover-research datasets where the GT
+   beats come from the dataset.
+
+> Original recordings stay under `data/` (already in `.gitignore`). Do not
+> commit, push, or upload them to public services — they may be cached
+> even after deletion.
+
+**Install + run**
+
+```powershell
+# Local profile (librosa). Demucs is on the experiments profile and runs
+# in Colab/Kaggle; the runner lazy-imports it via tools.prep_dataset and
+# skips songs whose build_reference() fails.
+pip install librosa
+
+python -m experiments.run_m0p_t2 `
+       --root    data/m0p_t2 `
+       --out-dir data/m0p_t2_work
+```
+
+Outputs in `data/m0p_t2_work/`:
+
+```
+m0p_t2_per_rendition.csv  one row per rendition: F / CMLt / AMLt / RT-factor
+m0p_t2_per_kind.csv       means by feature kind (chroma vs pitch)
+m0p_t2_per_song.csv       means by song
+m0p_t2_overall.csv        overall means
+<song>_<rendition>.png    query waveform + GT vs recovered beats + warp path
+```
+
+Scoring is the **same `tools/eval_beat.py::score_beats` mir_eval harness**
+as Tier 1 and the shelved blind path, so Tier 1 / Tier 2 / blind numbers
+all sit in the same table.
 
 ## ~~M0~~ — beat-tracking reality check *(shelved fallback, blind path)*
 
@@ -326,6 +396,7 @@ groovebot/
   align/                      M0' offline reference alignment (local, librosa-only)
     features.py               chroma / pyin-pitch features -> (12, T) for DTW
     dtw_align.py              OfflineDTWAligner + map_reference_beats
+    reference.py              ReferenceBundle + build_reference (Demucs lazy import) for Tier 2
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
@@ -334,6 +405,7 @@ tools/
 experiments/
   run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate (shelved blind path)
   run_m0p_align.py            M0' Tier 1 runner: synth_warp -> features -> DTW -> recovered beats -> score
+  run_m0p_t2.py               M0' Tier 2 runner: build_reference (vocal+melody) -> DTW per rendition -> score
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator

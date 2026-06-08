@@ -8,9 +8,12 @@ score-following), see spec §14.
 """
 from groovebot.align.dtw_align import OfflineDTWAligner, map_reference_beats
 from groovebot.align.features import extract_align_features
+from groovebot.align.reference import ReferenceBundle, build_reference
 
 __all__ = [
     "OfflineDTWAligner",
+    "ReferenceBundle",
+    "build_reference",
     "extract_align_features",
     "map_reference_beats",
 ]

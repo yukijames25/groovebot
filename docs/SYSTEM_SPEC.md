@@ -88,10 +88,10 @@
 
 ### 4.2 データフロー
 ```
- user picks song ──► SongReference  ────────────────────────────┐
-                     (beats, downbeats,                          │
-                      sections, align_features)                  │
-                                                                 ▼
+ user picks song ──► SongReference  ───────────────────────────────┐
+                     (beats, downbeats,                            │
+                      sections, align_features)                    │
+                                                                   ▼
  mic/file ──► AudioInput ──► (ring buffer) ──► ReferenceAligner ─► beat_pos,
                                   │            (主軸 §14)          downbeat,
                                   │                                tempo,
@@ -288,6 +288,25 @@ Tier 2(Tier 1通過後・本物の頑健性):
 著作権/規約: 音源は data/(gitignore済)にローカル保持。再配布(commit/push)しない。YouTube等を使う場合も
   data/ ローカル限定・分析専用・公開リポジトリへ絶対コミットしない。
 
+### 9.x M0' Tier 2: 別演奏での頑健性
+目的: 既知曲の参照に、その曲の「別演奏」(別録音の歌唱・鼻歌、アカペラ)を整合させ拍グリッドを
+どれだけ復元できるか測る。Tier 1の自己ワープと違い、音色・表現・微小タイミングが異なる本物の試金石。
+特に鼻歌(単旋律・和声なし・子音なし)が核心。
+
+参照の作り方(重要): フルミックスではなく声/旋律で整合する。
+  - reference vocal: 原曲を Demucs でボーカル分離。
+  - reference melody: 参照ボーカルに pyin で F0 → 旋律特徴(鼻歌整合用)。
+  - reference beats: 原曲フルミックスのビート追跡(librosa.beat; フルミックスは盲目でも信頼できる)。
+特徴量: 歌唱=クロマ(声 vs 参照ボーカル)／鼻歌=音高コンター(query F0 vs 参照旋律)。
+アライメント: オフライン DTW(Tier 1 の OfflineDTWAligner 流用) → 復元拍。
+評価: 復元拍を演奏の正解拍(GT)に mir_eval(F/CMLt/AMLt)で採点。GT取得は演奏データの作り方に依存。
+
+データ(演奏 query と GT 拍):
+  - 推奨(クリーン・鼻歌を確実に含む): 既知曲 2-3 を、原曲をイヤホンで流しつつアカペラで歌唱/鼻歌録音。
+    GT拍 = 原曲の拍グリッド(声を原曲に合わせ timeline 共有)。自分の声なので著作権無関係。
+  - 代替: ライセンス済みカラオケ/カバー研究データ。
+著作権/規約: 原曲・演奏音源は data/(gitignore)にローカル保持、commit/push しない。
+
 ---
 
 ## 10. テスト・評価
@@ -335,6 +354,9 @@ realtime 可）も同じハーネスで取得する。
   アライメントと盲目モードを**同一指標**で並べられる。M0' の集計 runner は
   `experiments/run_m0p_align.py`。Tier 1 は合成 time-stretch（既知ワープ）を query 側に
   かけるため、機構検証としては楽観値（§9.x 注意書き参照）。
+- **Tier 2 も同一スコアラ**: §9.x の M0' Tier 2（別演奏 query）も復元拍 → 演奏 GT 拍を
+  同じ `tools/eval_beat.py::score_beats()` に通す。Tier 2 集計は
+  `experiments/run_m0p_t2.py`、Tier 1 と Tier 2 の数字は同一指標で並べて比較できる。
 
 #### 副次・棚上げ — 盲目オンラインビート追跡
 盲目モード（`BeatTracker`）の同一指標評価は副次扱い。既存の Colab パイプライン
