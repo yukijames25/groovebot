@@ -7,13 +7,21 @@ pipeline in `features.py` but use a different aligner (online DTW /
 score-following), see spec §14.
 """
 from groovebot.align.dtw_align import OfflineDTWAligner, map_reference_beats
-from groovebot.align.features import extract_align_features
+from groovebot.align.features import (
+    consensus_f0,
+    extract_align_features,
+    f0_to_pitch_chroma,
+    pyin_f0,
+)
 from groovebot.align.reference import ReferenceBundle, build_reference
 
 __all__ = [
     "OfflineDTWAligner",
     "ReferenceBundle",
     "build_reference",
+    "consensus_f0",
     "extract_align_features",
+    "f0_to_pitch_chroma",
     "map_reference_beats",
+    "pyin_f0",
 ]

@@ -307,6 +307,29 @@ Tier 2(Tier 1通過後・本物の頑健性):
   - 代替: ライセンス済みカラオケ/カバー研究データ。
 著作権/規約: 原曲・演奏音源は data/(gitignore)にローカル保持、commit/push しない。
 
+### 9.x M0' Tier 2 (録音なし版): DAMP-VSEP による実演奏スケール評価
+動機: 自前録音なしで、実アマチュア歌手の多数の独立演奏でアライメントを評価する。
+データ: DAMP-VSEP (各セグメントが vocal v / backing b / mixture x を提供、6456歌手・41kセグメント)
+  または DAMP-S-AG (同一曲 Amazing Grace の17,582独立演奏)。
+  ライセンス: Smule Research Data License。要申請・非商用・再配布禁止 → data/(gitignore)ローカルのみ。
+  ※ステム分離済みなので Demucs 不要。
+
+参照(SongReference, アレンジ単位):
+  - beats: backing(器楽)を librosa.beat でビート追跡 → 拍グリッド。
+    (これは「器楽・参照側・オフライン」のビート追跡で信頼できる。放棄した『生アカペラの盲目追跡』とは別物。madmom不要)
+  - chroma参照: backing のクロマ。
+  - melody参照: 同一アレンジの別renditionのF0(既定: クエリと別の指定参照rendition、任意: 複数renditionのF0コンセンサス/leave-one-out)。
+特徴量経路(両方走らせる):
+  - chroma経路(歌唱): query vocal のクロマ → backing クロマ に整合。
+  - pitch経路(鼻歌の代理): query vocal の F0 → melody参照 に整合。
+    根拠: 同一旋律なら歌唱のF0と鼻歌のF0はともに旋律F0軌跡に収束するため、実歌声のF0で鼻歌経路を代理検証できる。
+    queryのF0は実演者由来であり自己派生(出来レース)ではない。
+GT拍: backing の拍グリッド(renditionはbackingに合わせて歌うため timeline 共有)。
+評価: 両経路の復元拍を eval_beat.score_beats(Tier1と同一)で採点 → chroma/pitch別・アレンジ別・全体。
+限界(正直に): (1) renditionはbackingに同期＝タイミングは概ね固定(自由テンポの独立演奏より易しい。ただし
+  「選曲して合わせて歌う/鼻歌る」製品の主用途に一致)。(2) pitch経路は実歌声を鼻歌代理とするため真の鼻歌
+  (音程が甘い場合あり)をやや楽観視しうる。真鼻歌の最終確認は QBH コーパス(MIR-QBSH等)を旋律アライメント指標で(別途・任意)。
+  
 ---
 
 ## 10. テスト・評価
@@ -357,6 +380,11 @@ realtime 可）も同じハーネスで取得する。
 - **Tier 2 も同一スコアラ**: §9.x の M0' Tier 2（別演奏 query）も復元拍 → 演奏 GT 拍を
   同じ `tools/eval_beat.py::score_beats()` に通す。Tier 2 集計は
   `experiments/run_m0p_t2.py`、Tier 1 と Tier 2 の数字は同一指標で並べて比較できる。
+- **Tier 2 DAMP は chroma / pitch 両経路を同一スコアラで採点**: §9.x の DAMP ルート
+  （`experiments/run_m0p_t2_damp.py`）は、各クエリ rendition に対して chroma 経路（query 声
+  vs backing クロマ）と pitch 経路（query F0 vs melody 参照）の両方を走らせ、それぞれの
+  復元拍を同じ `score_beats()` に通す。CSV では `feature_kind ∈ {chroma, pitch}` で分離集計し、
+  Tier 1 / Tier 2 録音版 / Tier 2 DAMP のすべての数字を一つの mir_eval 指標系で並べて比較できる。
 
 #### 副次・棚上げ — 盲目オンラインビート追跡
 盲目モード（`BeatTracker`）の同一指標評価は副次扱い。既存の Colab パイプライン

@@ -237,6 +237,96 @@ Scoring is the **same `tools/eval_beat.py::score_beats` mir_eval harness**
 as Tier 1 and the shelved blind path, so Tier 1 / Tier 2 / blind numbers
 all sit in the same table.
 
+## M0' Tier 2 — DAMP route (no recording, real amateurs at scale)
+
+A no-recording variant of Tier 2 that scales to thousands of independent
+amateur performances using the **DAMP-VSEP** or **DAMP-S-AG** corpora
+(Smule Research Data License). The datasets ship pre-separated stems
+(vocal / backing / mixture), so **Demucs is not needed** here. See spec
+§9.x DAMP for the full rationale and limits.
+
+For each arrangement (the same song sung by many singers, all timed to a
+shared backing track):
+
+- **beats**         librosa.beat.beat_track on the backing — reliable
+                    because the backing is instrumental and offline (this
+                    is not the shelved blind vocal beat path).
+- **chroma ref**    librosa chroma_cqt on the backing.
+- **melody ref**    either a single **designated** rendition's pyin F0,
+                    or a **consensus** built from a frame-wise nanmedian
+                    of every rendition's F0, leave-one-out per query.
+
+Every query rendition is scored on **both paths** with the same scorer:
+
+- **chroma path**   query vocal chroma -> backing chroma.
+- **pitch path**    query F0 chroma -> melody reference.
+
+**License + data handling**
+
+DAMP datasets require a request to Smule and are released under their
+Research Data License: **non-commercial, no redistribution**. Treat them
+exactly like the rest of `data/`:
+
+- Local-only. Already covered by `.gitignore` (whole `data/` tree).
+- **Never commit, push, or upload** DAMP audio anywhere. Public caches
+  may keep copies after deletion.
+- Don't redistribute derived artifacts (separated stems, F0 contours,
+  even spectrograms) outside the project's local working tree.
+
+**Normalized input layout** (one arrangement per subdirectory):
+
+```
+data/m0p_t2_damp/<arrangement_id>/
+  backing.wav
+  vocal_<rendition_id>.wav     (one or more)
+```
+
+For DAMP-VSEP, treat each (or each filtered) segment as an arrangement
+with one rendition. For DAMP-S-AG, every singer-take becomes a rendition
+of the same arrangement (`amazing_grace`). The raw DAMP file naming
+varies between releases; if yours doesn't match, write a one-off script
+to copy or symlink into the layout above. `tools/ingest_damp.py
+--root data/m0p_t2_damp` prints a quick sanity listing.
+
+**Run**
+
+```powershell
+pip install librosa
+
+# Designated melody reference (first rendition by id).
+python -m experiments.run_m0p_t2_damp `
+       --root    data/m0p_t2_damp `
+       --out-dir data/m0p_t2_damp_work
+
+# Consensus melody (leave-one-out median across renditions).
+python -m experiments.run_m0p_t2_damp `
+       --root    data/m0p_t2_damp `
+       --out-dir data/m0p_t2_damp_work `
+       --melody-mode consensus
+```
+
+Outputs in `data/m0p_t2_damp_work/`:
+
+```
+m0p_t2_damp_per_path.csv          one row per (rendition, path): F / CMLt / AMLt / RT
+m0p_t2_damp_per_kind.csv          means by feature kind (chroma vs pitch)
+m0p_t2_damp_per_arrangement.csv   means by arrangement_id
+m0p_t2_damp_overall.csv           overall means
+<arr>__<rendition>__<kind>.png    query vocal + GT vs recovered beats + warp path
+```
+
+**Limits to read the numbers with** (also in spec §9.x DAMP):
+
+- DAMP renditions are sung *to* the backing, so timing is largely fixed
+  — easier than truly free-tempo independent performances. This matches
+  our target use case ("pick a song, sing/hum along") but means the
+  numbers will be optimistic for a free-tempo regime.
+- The pitch path uses **real singing as a humming proxy**. It exercises
+  the F0-only DTW path on real performer F0 (not self-derived), but may
+  be optimistic for true humming where pitch is often less stable. A
+  separate confirmation pass on a QBH corpus (e.g. MIR-QBSH) with a
+  melody-alignment metric is optional follow-up.
+
 ## ~~M0~~ — beat-tracking reality check *(shelved fallback, blind path)*
 
 > Shelved per `docs/SYSTEM_SPEC.md` §14.3 (madmom 0.16.1 doesn't build on
@@ -401,11 +491,13 @@ tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
   prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
+  ingest_damp.py              DAMP-VSEP / DAMP-S-AG adapter: discover_arrangements over data/m0p_t2_damp/
   _build_m0_notebook.py       regenerates notebooks/m0_gtzan_eval.ipynb (source of truth)
 experiments/
   run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate (shelved blind path)
   run_m0p_align.py            M0' Tier 1 runner: synth_warp -> features -> DTW -> recovered beats -> score
   run_m0p_t2.py               M0' Tier 2 runner: build_reference (vocal+melody) -> DTW per rendition -> score
+  run_m0p_t2_damp.py          M0' Tier 2 DAMP runner: backing -> beats/chroma; designated/consensus melody; chroma + pitch paths
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator
