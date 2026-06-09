@@ -4,6 +4,7 @@ import csv
 from pathlib import Path
 
 import numpy as np
+import pretty_midi
 import pytest
 import soundfile as sf
 
@@ -237,3 +238,94 @@ def test_run_pipeline_writes_all_csvs_and_pngs(tmp_path):
     by_kind = {p["feature_kind"]: p for p in per_kind}
     assert by_kind["chroma"]["f_mean"] >= 0.2, by_kind
     assert by_kind["pitch"]["f_mean"]  >= 0.2, by_kind
+
+
+# --------------------------------------------------------------------------- #
+# MIDI reference path
+# --------------------------------------------------------------------------- #
+def _write_arpeggio_midi(midi_path: Path) -> Path:
+    """MIDI that matches the synthetic vocal's pitch arpeggio (C4-E4-G4-C5,
+    one note per beat, beat_period=PERIOD, N_BEATS beats)."""
+    pitches = (60, 64, 67, 72)
+    pm = pretty_midi.PrettyMIDI()
+    inst = pretty_midi.Instrument(program=0)
+    for i in range(N_BEATS):
+        inst.notes.append(pretty_midi.Note(
+            velocity=100, pitch=pitches[i % len(pitches)],
+            start=i * PERIOD, end=(i + 1) * PERIOD,
+        ))
+    pm.instruments.append(inst)
+    pm.write(str(midi_path))
+    return midi_path
+
+
+def _make_midi_arrangement(d: Path, n_renditions: int = 2) -> Path:
+    """Arrangement dir with reference.midi + N vocal_*.wav, no backing.wav."""
+    d.mkdir(parents=True, exist_ok=True)
+    _write_arpeggio_midi(d / "reference.midi")
+    for i in range(n_renditions):
+        rid = f"singer{i:02d}"
+        sf.write(str(d / f"vocal_{rid}.wav"), _synth_vocal(seed=i + 1), SR)
+    return d
+
+
+def test_run_arrangement_midi_scores_every_rendition(tmp_path):
+    arr_dir = _make_midi_arrangement(tmp_path / "synth_midi", n_renditions=2)
+    arrangements = discover_arrangements(tmp_path)
+    assert len(arrangements) == 1
+    assert arrangements[0].backing_wav is None
+    assert arrangements[0].reference_midi is not None
+
+    aligner = OfflineDTWAligner(sample_rate=SR, hop_length=512)
+    rows = run_arrangement(
+        arrangements[0], tmp_path / "work", aligner,
+        reference_source="midi",
+        make_png=False,
+    )
+    # 2 renditions x 2 paths = 4 rows; MIDI mode scores all.
+    assert len(rows) == 4
+    assert {r["track"] for r in rows} == {"singer00", "singer01"}
+    assert sorted(r["feature_kind"] for r in rows) == [
+        "chroma", "chroma", "pitch", "pitch",
+    ]
+
+
+def test_run_arrangement_midi_raises_without_midi(tmp_path):
+    """If reference_source=midi but no MIDI exists, raise a clear error."""
+    arr_dir = _make_arrangement(tmp_path / "synth_backing", n_renditions=2)
+    arrangements = discover_arrangements(tmp_path)
+    aligner = OfflineDTWAligner(sample_rate=SR, hop_length=512)
+    with pytest.raises(ValueError):
+        run_arrangement(
+            arrangements[0], tmp_path / "work", aligner,
+            reference_source="midi", make_png=False,
+        )
+
+
+def test_run_pipeline_midi_writes_csvs_and_pngs(tmp_path):
+    """End-to-end pipeline with --reference-source midi (no Demucs, no
+    backing audio): produces all four CSVs + per-row PNGs, F-measure on
+    pitch path lands above the wide guardrail."""
+    _make_midi_arrangement(tmp_path / "synth_midi", n_renditions=2)
+    out_dir = tmp_path / "work"
+    rows, per_kind, per_arr, overall = run_pipeline(
+        root=tmp_path,
+        out_dir=out_dir,
+        sample_rate=SR,
+        hop_length=512,
+        reference_source="midi",
+        make_png=True,
+        verbose=False,
+    )
+    assert len(rows) == 4    # 2 renditions x 2 paths
+    for name in ("m0p_t2_damp_per_path.csv",
+                 "m0p_t2_damp_per_kind.csv",
+                 "m0p_t2_damp_per_arrangement.csv",
+                 "m0p_t2_damp_overall.csv"):
+        assert (out_dir / name).exists()
+    pngs = sorted(out_dir.glob("*.png"))
+    assert len(pngs) == 4
+    by_kind = {p["feature_kind"]: p for p in per_kind}
+    # Pitch path on MIDI melody should clear a wide guardrail (the
+    # synthetic vocal matches the MIDI pitch arpeggio exactly).
+    assert by_kind["pitch"]["f_mean"] >= 0.2, by_kind

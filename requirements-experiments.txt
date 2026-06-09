@@ -24,6 +24,11 @@
 # tools/synth_warp.py + experiments/run_m0p_align.py.
 librosa>=0.10
 
+# Light MIDI parser. Used by groovebot/align/midi_ref.py to build a
+# SongReference (beats + melody) directly from a MIDI file — no audio
+# backing / ffmpeg needed (DAMP-S-AG MIDI route, spec §9.x DAMP).
+pretty_midi>=0.2
+
 # Pin numpy <2 — required by madmom 0.16.1 (BeatNet transitive dep).
 # Demucs + torch run fine on numpy 1.26 (verified on Colab 2026-06-08).
 # librosa runs fine on numpy 2.x locally; this pin only bites when you install

@@ -329,6 +329,18 @@ GT拍: backing の拍グリッド(renditionはbackingに合わせて歌うため
 限界(正直に): (1) renditionはbackingに同期＝タイミングは概ね固定(自由テンポの独立演奏より易しい。ただし
   「選曲して合わせて歌う/鼻歌る」製品の主用途に一致)。(2) pitch経路は実歌声を鼻歌代理とするため真の鼻歌
   (音程が甘い場合あり)をやや楽観視しうる。真鼻歌の最終確認は QBH コーパス(MIR-QBSH等)を旋律アライメント指標で(別途・任意)。
+
+DAMP-S-AG 向け補足 — reference=MIDI ルート:
+  DAMP-S-AG には参照 MIDI ファイル(amazing_grace.midi、標準 MIDI)が同梱されており、
+  これを使えば backing 音声・ffmpeg・librosa.beat を一切経由せずに grid / melody / chroma の
+  すべてを「楽譜側」から取れる。実装は groovebot/align/midi_ref.load_reference_from_midi:
+    - beats: pretty_midi.PrettyMIDI.get_beats() / get_downbeats()
+    - melody: ノート列を (12, T) one-hot dominant pitch class chroma にラスタライズ
+    - chroma_template: 同じノート列を column-L2 正規化した chroma 風テンプレート
+  pitch 経路(query F0 → MIDI melody)は鼻歌想定の主軸、chroma 経路(query chroma → MIDI chroma)は
+  従。MIDI モードは designated/consensus melody 切替が無く全 rendition がクエリ対象。
+  運用: tools/ingest_damp damp-s-ag で tar から少数の rendition + MIDI だけストリーム抽出
+  → experiments/run_m0p_t2_damp --reference-source midi で評価。raw tarball は不変。
   
 ---
 

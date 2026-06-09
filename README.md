@@ -285,7 +285,7 @@ For DAMP-VSEP, treat each (or each filtered) segment as an arrangement
 with one rendition. For DAMP-S-AG, every singer-take becomes a rendition
 of the same arrangement (`amazing_grace`). The raw DAMP file naming
 varies between releases; if yours doesn't match, write a one-off script
-to copy or symlink into the layout above. `tools/ingest_damp.py
+to copy or symlink into the layout above. `tools/ingest_damp.py list
 --root data/m0p_t2_damp` prints a quick sanity listing.
 
 **Run**
@@ -304,6 +304,70 @@ python -m experiments.run_m0p_t2_damp `
        --out-dir data/m0p_t2_damp_work `
        --melody-mode consensus
 ```
+
+### DAMP-S-AG variant — MIDI reference (no backing audio / ffmpeg)
+
+DAMP-S-AG (Sing! Amazing Grace, 17,582 renditions of one song) ships an
+`amazing_grace.midi` next to the audio. We use that MIDI directly as the
+reference, sidestepping the need to decode the M4A backing track —
+`pretty_midi` gives us beats, a one-hot pitch chroma melody, and a
+column-L2 chroma template, all on the same `(12, T)` shape as our chroma
+features. ffmpeg is not needed; renditions are libsndfile-readable
+(`.m4a` extension, OGG/VORBIS payload).
+
+**Data prep**
+
+`tools/ingest_damp damp-s-ag` stream-extracts a subset directly from the
+raw `amazing_grace.tar.gz` into the normalized arrangement layout. The
+source tarball is **not modified**.
+
+```powershell
+pip install librosa pretty_midi
+
+# Extract the first 100 renditions (in archive order), plus the MIDI.
+python -m tools.ingest_damp damp-s-ag `
+       --tarball data/amazing_grace.tar.gz `
+       --out     data/m0p_t2_damp `
+       --max-n   100
+
+# Optional filters before --max-n is applied:
+#   --headphones-only        (TSV column `headphones == 1`)
+#   --country US             (TSV column `country`)
+```
+
+Writes:
+
+```
+data/m0p_t2_damp/amazing_grace/
+  reference.midi              (from amazing_grace.midi in tar)
+  vocal_<perf_id>.m4a × N     (OGG/VORBIS payload; readable by soundfile)
+```
+
+**Run**
+
+```powershell
+python -m experiments.run_m0p_t2_damp `
+       --root             data/m0p_t2_damp `
+       --out-dir          data/m0p_t2_damp_work `
+       --reference-source midi `
+       --vocal-glob       "vocal_*.m4a"
+```
+
+The pitch path (query F0 vs MIDI melody) is the intended primary read
+for humming behaviour; the chroma path (query chroma vs MIDI chroma
+template) is reported alongside for comparison. MIDI mode scores every
+rendition (no designated / consensus selection).
+
+**Specific limits for DAMP-S-AG**
+
+- Only one song. DAMP-S-AG is a single-arrangement deep dive; for
+  arrangement coverage you still want DAMP-VSEP.
+- *Amazing Grace* is a **slow, rubato-leaning hymn**. Renditions vary in
+  tempo and phrasing; the reference grid still comes from the same
+  shared backing track all singers heard, so the warp DTW has to absorb
+  is genuine cross-performer variation.
+- All other DAMP-S-AG limits from the section above (timing fixed to
+  backing, singing as a humming proxy) still apply.
 
 Outputs in `data/m0p_t2_damp_work/`:
 
@@ -487,11 +551,12 @@ groovebot/
     features.py               chroma / pyin-pitch features -> (12, T) for DTW
     dtw_align.py              OfflineDTWAligner + map_reference_beats
     reference.py              ReferenceBundle + build_reference (Demucs lazy import) for Tier 2
+    midi_ref.py               MidiReference + load_reference_from_midi (pretty_midi; DAMP-S-AG MIDI route)
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
   prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
-  ingest_damp.py              DAMP-VSEP / DAMP-S-AG adapter: discover_arrangements over data/m0p_t2_damp/
+  ingest_damp.py              DAMP-VSEP / DAMP-S-AG adapter: list (discovery) + damp-s-ag (stream tarball subset)
   _build_m0_notebook.py       regenerates notebooks/m0_gtzan_eval.ipynb (source of truth)
 experiments/
   run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate (shelved blind path)

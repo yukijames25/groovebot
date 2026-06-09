@@ -61,6 +61,7 @@ from groovebot.align.features import (
     f0_to_pitch_chroma,
     pyin_f0,
 )
+from groovebot.align.midi_ref import load_reference_from_midi
 from tools.eval_beat import score_beats
 from tools.ingest_damp import DampArrangement, DampRendition, discover_arrangements
 
@@ -126,7 +127,14 @@ def melody_from_consensus(
 # --------------------------------------------------------------------------- #
 # Per-arrangement run loop
 # --------------------------------------------------------------------------- #
-def _load_mono_wav(path: Path, expected_sr: int) -> np.ndarray:
+def _load_mono_audio(path: Path, expected_sr: int) -> np.ndarray:
+    """Load any libsndfile-readable file as float32 mono.
+
+    Defers to soundfile, which reads by content, not extension — DAMP-S-AG
+    renditions are labelled `.m4a` but are actually OGG/VORBIS containers
+    (confirmed locally), so the same loader handles wav, flac, and ogg
+    without ffmpeg.
+    """
     audio, sr = sf.read(str(path), dtype="float32", always_2d=False)
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
@@ -142,59 +150,98 @@ def run_arrangement(
     out_dir: Path,
     aligner: OfflineDTWAligner,
     *,
+    reference_source: str = "backing",
     melody_mode: str = "designated",
     designated: str | None = None,
     make_png: bool = True,
 ) -> list[dict]:
     """Score every rendition of `arrangement` against both paths.
 
-    Returns a list of row dicts (one per `(rendition, path)` pair).
+    `reference_source` decides where beats / chroma reference / melody
+    reference come from:
+
+    - `"backing"`: librosa.beat + chroma_cqt on `backing.wav`. The melody
+      reference comes from the renditions themselves
+      (`melody_mode` = `designated` or `consensus`).
+    - `"midi"`: pretty_midi on `reference.midi`. Beats from
+      `get_beats()`, chroma reference from a column-L2 chroma template,
+      melody reference from the one-hot dominant pitch class — no
+      `melody_mode` to choose; the MIDI is the melody. All renditions
+      become query candidates.
+
+    Returns one row dict per `(rendition, path)` pair (path ∈
+    `{chroma, pitch}`).
     """
+    if reference_source not in ("backing", "midi"):
+        raise ValueError(f"unknown reference_source: {reference_source!r}")
     if melody_mode not in ("designated", "consensus"):
         raise ValueError(f"unknown melody_mode: {melody_mode!r}")
-    if len(arrangement.renditions) < 2:
-        # designated needs ref + at least one query; consensus needs at
-        # least 2 contours to be meaningful.
-        return []
 
     sr = aligner.sample_rate
     hop = aligner.hop_length
 
-    backing = _load_mono_wav(arrangement.backing_wav, sr)
-    beats = beats_from_backing(backing, sr, hop_length=hop)
-    chroma = chroma_from_backing(backing, sr, hop_length=hop)
+    # -- Reference (beats + chroma) -----------------------------------------
+    if reference_source == "midi":
+        if arrangement.reference_midi is None:
+            raise ValueError(
+                f"{arrangement.arrangement_id}: --reference-source midi "
+                "requires reference.midi"
+            )
+        midi_ref = load_reference_from_midi(
+            arrangement.reference_midi, sample_rate=sr, hop_length=hop,
+        )
+        beats = midi_ref.beats
+        chroma_ref = midi_ref.chroma_template
+        midi_melody: np.ndarray | None = midi_ref.melody
+    else:   # backing
+        if arrangement.backing_wav is None:
+            raise ValueError(
+                f"{arrangement.arrangement_id}: --reference-source backing "
+                "requires backing.wav"
+            )
+        backing = _load_mono_audio(arrangement.backing_wav, sr)
+        beats = beats_from_backing(backing, sr, hop_length=hop)
+        chroma_ref = chroma_from_backing(backing, sr, hop_length=hop)
+        midi_melody = None
 
-    # Load every vocal and (for the pitch path) cache its F0 contour.
+    # -- Vocals + cached F0 -------------------------------------------------
     vocals: dict[str, np.ndarray] = {}
     f0s: dict[str, np.ndarray] = {}
     for r in arrangement.renditions:
-        v = _load_mono_wav(r.vocal_wav, sr)
+        v = _load_mono_audio(r.vocal_wav, sr)
         vocals[r.rendition_id] = v
         f0s[r.rendition_id] = pyin_f0(v, sr, hop_length=hop)
 
-    # Decide which renditions are query candidates.
+    # -- Query set + melody reference ---------------------------------------
     rendition_ids = [r.rendition_id for r in arrangement.renditions]
-    if melody_mode == "designated":
+    if reference_source == "midi":
+        query_ids = list(rendition_ids)
+        melody_constant: np.ndarray | None = midi_melody
+    elif melody_mode == "designated":
+        if len(rendition_ids) < 2:
+            return []
         ref_id = designated or rendition_ids[0]
         if ref_id not in f0s:
             raise ValueError(
                 f"designated rendition {ref_id!r} not in arrangement "
                 f"{arrangement.arrangement_id!r}"
             )
-        melody_ref = f0_to_pitch_chroma(f0s[ref_id])
+        melody_constant = f0_to_pitch_chroma(f0s[ref_id])
         query_ids = [rid for rid in rendition_ids if rid != ref_id]
-    else:  # consensus
-        melody_ref = None
+    else:   # consensus
+        if len(rendition_ids) < 2:
+            return []
+        melody_constant = None      # built per query (leave-one-out)
         query_ids = list(rendition_ids)
 
+    # -- Score each query through both paths --------------------------------
     rows: list[dict] = []
     for qid in query_ids:
-        if melody_mode == "consensus":
-            # leave-one-out median
+        if melody_constant is not None:
+            melody = melody_constant
+        else:
             others = [f for k, f in f0s.items() if k != qid]
             melody = melody_from_consensus(others)
-        else:
-            melody = melody_ref
         query_audio = vocals[qid]
 
         for kind in ("chroma", "pitch"):
@@ -204,7 +251,7 @@ def run_arrangement(
                 query_audio=query_audio,
                 query_f0=f0s[qid],
                 sr=sr, hop=hop,
-                backing_chroma=chroma,
+                backing_chroma=chroma_ref,
                 melody_chroma=melody,
                 aligner=aligner,
                 gt_beats=beats,
@@ -218,7 +265,7 @@ def run_arrangement(
                     query_audio, sr, beats, row["recovered"], row["wp"],
                     str(png),
                     title=(f"{arrangement.arrangement_id}/{qid} "
-                           f"kind={kind}"),
+                           f"kind={kind} ref={reference_source}"),
                 )
     return rows
 
@@ -362,26 +409,41 @@ def run_pipeline(
     *,
     sample_rate: int = 22050,
     hop_length: int = 512,
+    reference_source: str = "backing",
     melody_mode: str = "designated",
     designated: str | None = None,
     make_png: bool = True,
     verbose: bool = True,
+    vocal_glob: str = "vocal_*.wav",
 ) -> tuple[list[dict], list[dict], list[dict], dict]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     aligner = OfflineDTWAligner(sample_rate=sample_rate, hop_length=hop_length)
     rows: list[dict] = []
-    for a in discover_arrangements(Path(root)):
-        info = sf.info(str(a.backing_wav))
-        if info.samplerate != sample_rate:
+    for a in discover_arrangements(Path(root), vocal_glob=vocal_glob):
+        # Only inspect backing sr when we'll actually load it.
+        if reference_source == "backing":
+            if a.backing_wav is None:
+                if verbose:
+                    print(f"skip {a.arrangement_id}: no backing.wav for "
+                          "--reference-source backing", file=sys.stderr)
+                continue
+            info = sf.info(str(a.backing_wav))
+            if info.samplerate != sample_rate:
+                if verbose:
+                    print(f"skip {a.arrangement_id}: backing sr="
+                          f"{info.samplerate}, need {sample_rate}",
+                          file=sys.stderr)
+                continue
+        elif reference_source == "midi" and a.reference_midi is None:
             if verbose:
-                print(f"skip {a.arrangement_id}: backing sr="
-                      f"{info.samplerate}, need {sample_rate}",
-                      file=sys.stderr)
+                print(f"skip {a.arrangement_id}: no reference.midi for "
+                      "--reference-source midi", file=sys.stderr)
             continue
         try:
             arr_rows = run_arrangement(
                 a, out_dir, aligner,
+                reference_source=reference_source,
                 melody_mode=melody_mode,
                 designated=designated,
                 make_png=make_png,
@@ -421,12 +483,26 @@ def build_parser() -> argparse.ArgumentParser:
                     help="root dir containing arrangement subdirectories "
                          "(see tools/ingest_damp.py for layout)")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--reference-source",
+                    choices=("backing", "midi"),
+                    default="backing",
+                    help="where to derive beats / chroma / melody from. "
+                         "'backing' uses backing.wav (librosa.beat + "
+                         "chroma_cqt). 'midi' uses reference.midi "
+                         "(pretty_midi beats + rasterized note matrix). "
+                         "MIDI mode ignores --melody-mode and scores "
+                         "every rendition.")
     ap.add_argument("--melody-mode",
                     choices=("designated", "consensus"),
-                    default="designated")
+                    default="designated",
+                    help="how to build the pitch-path melody reference "
+                         "(backing mode only).")
     ap.add_argument("--designated", default=None,
                     help="rendition_id to use as the melody reference "
-                         "(designated mode only). Default: first by id.")
+                         "(backing+designated only). Default: first by id.")
+    ap.add_argument("--vocal-glob", default="vocal_*.wav",
+                    help="glob to match rendition vocals under each "
+                         "arrangement dir. DAMP-S-AG uses 'vocal_*.m4a'.")
     ap.add_argument("--sr", type=int, default=22050)
     ap.add_argument("--hop", type=int, default=512)
     ap.add_argument("--no-png", action="store_true")
@@ -440,8 +516,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         out_dir=Path(args.out_dir),
         sample_rate=args.sr,
         hop_length=args.hop,
+        reference_source=args.reference_source,
         melody_mode=args.melody_mode,
         designated=args.designated,
+        vocal_glob=args.vocal_glob,
         make_png=not args.no_png,
     )
     return 0

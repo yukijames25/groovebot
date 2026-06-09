@@ -13,15 +13,18 @@ from groovebot.align.features import (
     f0_to_pitch_chroma,
     pyin_f0,
 )
+from groovebot.align.midi_ref import MidiReference, load_reference_from_midi
 from groovebot.align.reference import ReferenceBundle, build_reference
 
 __all__ = [
+    "MidiReference",
     "OfflineDTWAligner",
     "ReferenceBundle",
     "build_reference",
     "consensus_f0",
     "extract_align_features",
     "f0_to_pitch_chroma",
+    "load_reference_from_midi",
     "map_reference_beats",
     "pyin_f0",
 ]
