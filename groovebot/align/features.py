@@ -106,6 +106,40 @@ def f0_to_pitch_chroma(f0_hz: np.ndarray) -> np.ndarray:
     return chroma
 
 
+def pitch_contour_feature(
+    f0_hz: np.ndarray,
+    *,
+    key_normalize: bool = True,
+    voicing_weight: float = 5.0,
+) -> np.ndarray:
+    """Build a (2, T) continuous pitch feature for DTW.
+
+    Row 0: MIDI semitones; optionally key-normalised by subtracting the
+    median voiced pitch so the same melody in different keys collapses
+    onto the same contour.
+    Row 1: voicing channel — `voicing_weight` on voiced frames, 0 on
+    unvoiced. Bakes voicing mismatch into the euclidean distance
+    symmetrically (unvoiced-on-both -> 0 cost, voiced-vs-unvoiced ->
+    `voicing_weight` cost). Designed to replace the 12-D one-hot pitch
+    class chroma whose octave-folded, voicing-asymmetric design caused
+    the DAMP-S-AG pitch DTW to wander (see diagnostic notes).
+
+    Unvoiced frames carry (0, 0), so DTW with euclidean distance scores
+    them at 0 against unvoiced reference frames. Voiced-vs-unvoiced
+    asymmetry costs `voicing_weight` from the voicing channel.
+    """
+    f0 = np.asarray(f0_hz, dtype=float)
+    out = np.zeros((2, len(f0)), dtype=np.float32)
+    voiced = np.isfinite(f0) & (f0 > 0)
+    if voiced.any():
+        midi_pitch = librosa.hz_to_midi(f0[voiced])
+        if key_normalize:
+            midi_pitch = midi_pitch - float(np.median(midi_pitch))
+        out[0, voiced] = midi_pitch.astype(np.float32)
+        out[1, voiced] = float(voicing_weight)
+    return out
+
+
 # Back-compat: keep the old private name pointing at the public one so
 # any external import that grabbed `_f0_to_pitch_chroma` still works.
 _f0_to_pitch_chroma = f0_to_pitch_chroma
@@ -119,3 +153,37 @@ def _to_mono(audio: np.ndarray) -> np.ndarray:
         axis = 0 if a.shape[0] < a.shape[-1] else -1
         a = a.mean(axis=axis)
     return a.astype(np.float32, copy=False)
+
+
+def trim_silence(
+    audio: np.ndarray,
+    sr: int,
+    *,
+    frame_length: int = 2048,
+    hop_length: int = 512,
+    db_threshold: float = -45.0,
+) -> tuple[np.ndarray, float, float]:
+    """Drop leading + trailing silence, returning the trimmed audio plus the
+    trim durations in seconds.
+
+    Silence is anything quieter than `db_threshold` dB on an RMS envelope.
+    Designed for the DAMP-S-AG diagnostic fix: align renditions to MIDI from
+    their first sung note rather than forcing MIDI[0] -> recording[0]. If
+    the entire signal is below threshold the audio is returned unchanged
+    with both trim durations zero.
+    """
+    a = _to_mono(audio)
+    rms = librosa.feature.rms(
+        y=a, frame_length=frame_length, hop_length=hop_length,
+    )[0]
+    db = 20.0 * np.log10(np.maximum(rms, 1e-10))
+    voiced = db > float(db_threshold)
+    if not voiced.any():
+        return a, 0.0, 0.0
+    first = int(np.argmax(voiced))
+    last = int(len(voiced) - 1 - np.argmax(voiced[::-1]))
+    s_sample = int(first * hop_length)
+    e_sample = min(len(a), int(last * hop_length + frame_length))
+    leading_sec = float(s_sample / sr)
+    trailing_sec = float((len(a) - e_sample) / sr)
+    return a[s_sample:e_sample], leading_sec, trailing_sec

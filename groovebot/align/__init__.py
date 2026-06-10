@@ -11,7 +11,9 @@ from groovebot.align.features import (
     consensus_f0,
     extract_align_features,
     f0_to_pitch_chroma,
+    pitch_contour_feature,
     pyin_f0,
+    trim_silence,
 )
 from groovebot.align.midi_ref import MidiReference, load_reference_from_midi
 from groovebot.align.reference import ReferenceBundle, build_reference
@@ -26,5 +28,7 @@ __all__ = [
     "f0_to_pitch_chroma",
     "load_reference_from_midi",
     "map_reference_beats",
+    "pitch_contour_feature",
     "pyin_f0",
+    "trim_silence",
 ]

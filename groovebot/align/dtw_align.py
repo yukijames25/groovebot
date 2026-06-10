@@ -18,12 +18,20 @@ import numpy as np
 class OfflineDTWAligner:
     """Wrap librosa.sequence.dtw with frame-rate bookkeeping.
 
-    Stateless apart from (sample_rate, hop_length, metric); call `align()`
-    with a fresh (query, reference) pair each time.
+    Stateless apart from (sample_rate, hop_length, metric, subseq); call
+    `align()` with a fresh (query, reference) pair each time.
+
+    When `subseq=True`, the query (`X`) must be matched entirely but the
+    reference (`Y`) gets boundary slack: the path may start at any
+    reference frame and end at any reference frame. Designed for
+    DAMP-style rendition-vs-MIDI alignment where the rendition does
+    not necessarily begin at MIDI frame 0 (see diagnostic notes in
+    docs/SYSTEM_SPEC.md §9.x DAMP).
     """
     sample_rate: int
     hop_length: int = 512
     metric: str = "euclidean"  # robust to all-zero pitch-chroma columns
+    subseq: bool = False
 
     @property
     def frame_rate(self) -> float:
@@ -48,7 +56,8 @@ class OfflineDTWAligner:
                 f"ref D={ref_feats.shape[0]}"
             )
         _D, wp = librosa.sequence.dtw(
-            X=query_feats, Y=ref_feats, metric=self.metric,
+            X=query_feats, Y=ref_feats,
+            metric=self.metric, subseq=self.subseq,
         )
         return np.asarray(wp, dtype=int)
 

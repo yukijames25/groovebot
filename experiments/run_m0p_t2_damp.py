@@ -59,7 +59,9 @@ from groovebot.align.features import (
     consensus_f0,
     extract_align_features,
     f0_to_pitch_chroma,
+    pitch_contour_feature,
     pyin_f0,
+    trim_silence,
 )
 from groovebot.align.midi_ref import load_reference_from_midi
 from tools.eval_beat import score_beats
@@ -153,6 +155,8 @@ def run_arrangement(
     reference_source: str = "backing",
     melody_mode: str = "designated",
     designated: str | None = None,
+    silence_trim: bool = False,
+    pitch_mode: str = "one-hot",
     make_png: bool = True,
 ) -> list[dict]:
     """Score every rendition of `arrangement` against both paths.
@@ -176,6 +180,13 @@ def run_arrangement(
         raise ValueError(f"unknown reference_source: {reference_source!r}")
     if melody_mode not in ("designated", "consensus"):
         raise ValueError(f"unknown melody_mode: {melody_mode!r}")
+    if pitch_mode not in ("one-hot", "continuous"):
+        raise ValueError(f"unknown pitch_mode: {pitch_mode!r}")
+    if pitch_mode == "continuous" and reference_source != "midi":
+        raise ValueError(
+            "pitch_mode='continuous' requires reference_source='midi' "
+            "(backing mode has no continuous melody reference)"
+        )
 
     sr = aligner.sample_rate
     hop = aligner.hop_length
@@ -192,7 +203,12 @@ def run_arrangement(
         )
         beats = midi_ref.beats
         chroma_ref = midi_ref.chroma_template
-        midi_melody: np.ndarray | None = midi_ref.melody
+        # In continuous pitch mode the pitch path uses the (2, T) MIDI
+        # contour instead of the (12, T) one-hot melody.
+        midi_melody: np.ndarray | None = (
+            midi_ref.pitch_contour if pitch_mode == "continuous"
+            else midi_ref.melody
+        )
     else:   # backing
         if arrangement.backing_wav is None:
             raise ValueError(
@@ -205,10 +221,16 @@ def run_arrangement(
         midi_melody = None
 
     # -- Vocals + cached F0 -------------------------------------------------
+    # With silence_trim, drop the leading/trailing silence so the singer's
+    # first sung note sits at trimmed_t=0. In MIDI mode where MIDI[0] is
+    # also the first sung note, GT == midi_ref.beats is now on the same
+    # timeline as the recovered beats without any post-hoc shift.
     vocals: dict[str, np.ndarray] = {}
     f0s: dict[str, np.ndarray] = {}
     for r in arrangement.renditions:
         v = _load_mono_audio(r.vocal_wav, sr)
+        if silence_trim:
+            v, _leading, _trailing = trim_silence(v, sr, hop_length=hop)
         vocals[r.rendition_id] = v
         f0s[r.rendition_id] = pyin_f0(v, sr, hop_length=hop)
 
@@ -256,6 +278,7 @@ def run_arrangement(
                 aligner=aligner,
                 gt_beats=beats,
                 feature_kind=kind,
+                pitch_mode=pitch_mode,
             )
             rows.append(row["scores"])
             if make_png:
@@ -282,8 +305,14 @@ def _score_one_path(
     aligner: OfflineDTWAligner,
     gt_beats: np.ndarray,
     feature_kind: str,
+    pitch_mode: str = "one-hot",
 ) -> dict:
-    """Run one path and return the score row plus diagnostics for the PNG."""
+    """Run one path and return the score row plus diagnostics for the PNG.
+
+    In `pitch_mode="continuous"` the pitch path uses a (2, T) key-normalised
+    semitone + voicing feature on both sides; the caller must supply the
+    matching MIDI-side `melody_chroma=midi_ref.pitch_contour`.
+    """
     t0 = time.perf_counter()
     if feature_kind == "chroma":
         query_feats = extract_align_features(
@@ -291,7 +320,10 @@ def _score_one_path(
         )
         ref_feats = backing_chroma
     elif feature_kind == "pitch":
-        query_feats = f0_to_pitch_chroma(query_f0)
+        if pitch_mode == "continuous":
+            query_feats = pitch_contour_feature(query_f0)
+        else:
+            query_feats = f0_to_pitch_chroma(query_f0)
         ref_feats = melody_chroma
         if ref_feats is None or ref_feats.shape[1] == 0:
             raise ValueError(
@@ -412,13 +444,19 @@ def run_pipeline(
     reference_source: str = "backing",
     melody_mode: str = "designated",
     designated: str | None = None,
+    dtw_subseq: bool = False,
+    silence_trim: bool = False,
+    pitch_mode: str = "one-hot",
     make_png: bool = True,
     verbose: bool = True,
     vocal_glob: str = "vocal_*.wav",
 ) -> tuple[list[dict], list[dict], list[dict], dict]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    aligner = OfflineDTWAligner(sample_rate=sample_rate, hop_length=hop_length)
+    aligner = OfflineDTWAligner(
+        sample_rate=sample_rate, hop_length=hop_length,
+        subseq=dtw_subseq,
+    )
     rows: list[dict] = []
     for a in discover_arrangements(Path(root), vocal_glob=vocal_glob):
         # Only inspect backing sr when we'll actually load it.
@@ -446,6 +484,8 @@ def run_pipeline(
                 reference_source=reference_source,
                 melody_mode=melody_mode,
                 designated=designated,
+                silence_trim=silence_trim,
+                pitch_mode=pitch_mode,
                 make_png=make_png,
             )
         except Exception as e:
@@ -503,6 +543,23 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--vocal-glob", default="vocal_*.wav",
                     help="glob to match rendition vocals under each "
                          "arrangement dir. DAMP-S-AG uses 'vocal_*.m4a'.")
+    ap.add_argument("--dtw-subseq", action="store_true",
+                    help="enable subsequence DTW (boundary slack on the "
+                         "reference axis). Lets DAMP-style renditions that "
+                         "don't begin at MIDI[0] find the right anchor.")
+    ap.add_argument("--silence-trim", action="store_true",
+                    help="drop leading/trailing silence from each rendition "
+                         "before alignment. In MIDI mode, this also puts the "
+                         "first sung note at trimmed t=0, so GT = MIDI beats "
+                         "without any post-hoc shift.")
+    ap.add_argument("--pitch-mode",
+                    choices=("one-hot", "continuous"),
+                    default="one-hot",
+                    help="pitch path feature representation. 'one-hot' uses "
+                         "12-D pitch class chroma (octave-folded). "
+                         "'continuous' uses a 2-D key-normalised semitone + "
+                         "voicing feature on both sides — requires MIDI mode "
+                         "so the reference has a matching contour.")
     ap.add_argument("--sr", type=int, default=22050)
     ap.add_argument("--hop", type=int, default=512)
     ap.add_argument("--no-png", action="store_true")
@@ -519,6 +576,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         reference_source=args.reference_source,
         melody_mode=args.melody_mode,
         designated=args.designated,
+        dtw_subseq=args.dtw_subseq,
+        silence_trim=args.silence_trim,
+        pitch_mode=args.pitch_mode,
         vocal_glob=args.vocal_glob,
         make_png=not args.no_png,
     )

@@ -27,11 +27,18 @@ class MidiReference:
     pitch class — closer to what `librosa.feature.chroma_cqt` produces on
     polyphonic audio, useful when the query is a full vocal stack rather
     than a single voice.
+    `pitch_contour` is the continuous (2, T) feature that pairs with
+    `pitch_contour_feature(pyin_f0(...))`: row 0 is the key-normalised
+    MIDI semitone of the highest-sounding (melody-on-top) note per frame,
+    row 1 is the voicing channel. Designed for the continuous-pitch DTW
+    fix to the DAMP-S-AG diagnostic (octave-folded, voicing-asymmetric
+    one-hot caused the pitch path to wander).
     """
     beats: np.ndarray            # beat times (sec)
     downbeats: np.ndarray        # downbeat times (sec); may be empty
     melody: np.ndarray           # (12, T) one-hot dominant pitch class
     chroma_template: np.ndarray  # (12, T) column-L2-normalised chroma
+    pitch_contour: np.ndarray    # (2, T) continuous semitone + voicing
     sample_rate: int             # frame-rate denominator (matches aligner)
     hop_length: int              # frame-rate denominator (matches aligner)
     tempo: float                 # representative BPM (median if variable)
@@ -42,8 +49,9 @@ def load_reference_from_midi(
     *,
     sample_rate: int = 22050,
     hop_length: int = 512,
+    pitch_voicing_weight: float = 5.0,
 ) -> MidiReference:
-    """Parse `midi_path` and rasterize notes into (12, T) frame matrices."""
+    """Parse `midi_path` and rasterize notes into frame matrices."""
     import pretty_midi  # lazy: pretty_midi is on the experiments profile
 
     pm = pretty_midi.PrettyMIDI(str(midi_path))
@@ -63,11 +71,16 @@ def load_reference_from_midi(
         tempo = 0.0
 
     melody, chroma_template = _rasterize_notes(pm, sample_rate, hop_length)
+    pitch_contour = _rasterize_pitch_contour(
+        pm, sample_rate, hop_length,
+        voicing_weight=pitch_voicing_weight,
+    )
     return MidiReference(
         beats=beats,
         downbeats=downbeats,
         melody=melody,
         chroma_template=chroma_template,
+        pitch_contour=pitch_contour,
         sample_rate=sample_rate,
         hop_length=hop_length,
         tempo=tempo,
@@ -116,3 +129,52 @@ def _rasterize_notes(
     chroma_template = (template / norms).astype(np.float32)
 
     return melody, chroma_template
+
+
+def _rasterize_pitch_contour(
+    pm,  # pretty_midi.PrettyMIDI
+    sample_rate: int,
+    hop_length: int,
+    *,
+    voicing_weight: float,
+) -> np.ndarray:
+    """Project the melody-on-top MIDI pitch onto a (2, T) continuous-semitone
+    feature paired with `features.pitch_contour_feature` on the query side.
+
+    For each frame we take the *highest* sounding (non-drum) MIDI pitch as
+    the melody — DAMP-S-AG MIDIs are essentially monophonic for the lead
+    voice, and the melody-on-top heuristic is robust to incidental
+    harmonisation. Row 0 is the key-normalised MIDI semitone (median
+    subtracted across voiced frames); row 1 is `voicing_weight` on voiced
+    frames and 0 on rests, so query/reference voicing asymmetry costs the
+    same on either side.
+    """
+    frame_rate = sample_rate / hop_length
+    duration = pm.get_end_time()
+    T = max(1, int(np.ceil(duration * frame_rate)) + 1)
+    contour = np.full(T, np.nan, dtype=np.float32)
+
+    for instrument in pm.instruments:
+        if instrument.is_drum:
+            continue
+        for note in instrument.notes:
+            start_f = max(0, int(np.floor(note.start * frame_rate)))
+            end_f = min(T, int(np.ceil(note.end * frame_rate)))
+            if end_f <= start_f:
+                continue
+            existing = contour[start_f:end_f]
+            # Melody-on-top: keep the highest pitch on each frame.
+            new = np.where(
+                np.isnan(existing) | (existing < float(note.pitch)),
+                float(note.pitch), existing,
+            )
+            contour[start_f:end_f] = new
+
+    voiced = np.isfinite(contour)
+    out = np.zeros((2, T), dtype=np.float32)
+    if voiced.any():
+        midi_pitch = contour[voiced].astype(np.float64)
+        midi_pitch = midi_pitch - float(np.median(midi_pitch))
+        out[0, voiced] = midi_pitch.astype(np.float32)
+        out[1, voiced] = float(voicing_weight)
+    return out

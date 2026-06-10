@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `7ac4ef5`（M0' Tier 2 DAMP-S-AG: MIDI 参照 + tarball サブセット抽出）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: M0'-T2-DAMP-Lever1+2 ／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
@@ -69,6 +69,50 @@
 - ばらつき大: chroma F は 0.07-0.52 と rendition 依存。歌唱品質との相関は次の集計で見る。
 
 `data/m0p_t2_damp_work/` に CSV 4 種。MIDI 参照ルートは ffmpeg 不在でも動くことを確認。
+
+### M0' Tier 2 DAMP-S-AG レバー実験（2026-06-11、20件）
+診断（前セッション）で「低スコアの大半は方法論アーティファクト」という仮説を立て、
+2つのレバーを実装して 20件で寄与を切り分けた。
+
+実装した opt-in 経路（default off で IF 後方互換）:
+- `OfflineDTWAligner.subseq` ＋ `groovebot.align.features.trim_silence` → `--dtw-subseq` / `--silence-trim`
+- `groovebot.align.features.pitch_contour_feature`（2次元: キー正規化セミトーン + voicing channel）
+  ＋ `MidiReference.pitch_contour` → `--pitch-mode {one-hot, continuous}`
+
+20件の F-measure 結果（同一サブセット、`subset20`）:
+
+| 条件 | F_chroma | F_pitch | CMLt_pitch | AMLt_pitch |
+|---|---:|---:|---:|---:|
+| Baseline | 0.298 | 0.199 | 0.212 | 0.225 |
+| Lever 1 のみ (subseq + trim) | **0.062** ↓↓ | 0.076 ↓↓ | 0.064 | 0.079 |
+| Lever 2 のみ (continuous pitch) | 0.298 = | 0.204 ≈ | 0.167 ↓ | 0.172 ↓ |
+| Lever 1 + Lever 2 | 0.062 ↓↓ | 0.116 ↓ | 0.078 | 0.089 |
+
+**判定**: 仮説に反して Lever 1 は両経路で大幅悪化、Lever 2 は ほぼ neutral。
+
+**失敗の理由（事後解析）**:
+- subseq: query が 70-85% 有声 vs MIDI 99% アクティブの非対称下では、DTW が「コスト最小の
+  小さなマッチ領域」に縮退し、`map_reference_beats` で大半の MIDI 拍がドロップされる典型パターン。
+  Amazing Grace のように reference 全長をクエリ全長で覆う前提のタスクには subseq の境界スラックが過剰。
+- silence_trim: 診断で既に判明していた通り、先頭/末尾無音は full DTW が境界スラックとして
+  productively 使っており、剥がすと逆に micro-misalignment を吸収できなくなる。
+- 連続セミトーン: pitch 経路の F は微増（+0.005）したが CMLt/AMLt が下がり、ネット neutral。
+  octave-folded one-hot の理論的問題はあるが、それは Amazing Grace の支配的な誤差要因ではない模様。
+
+**コードは残置**（後方互換の opt-in、テスト緑）。本番ルートでは引き続き baseline（subseq=False、
+silence_trim=False、pitch_mode=one-hot）を default として使う。
+
+**真の天井に近い候補**（未実施）:
+1. **per-rendition origin calibration**: 診断で LOW が +0.15s offset で F 0.07→0.41 に跳ねた。
+   DTW 後の小範囲 offset 掃引で「ピーク offset を採用」する後処理。
+2. **テンポ事前推定**: rendition vocal に `librosa.beat.tempo` をかけ、reference を伸縮してから DTW
+   （rubato 賛美歌の最大の誤差源を緩和）。
+3. **Sakoe-Chiba band**: `librosa.sequence.dtw(band_rad=0.1)` 等で warp の最大斜度を制約し、
+   subseq の縮退と対角逸脱を同時に防ぐ。
+4. **データ多様性**: 賛美歌1曲（Amazing Grace）の代表性は限定的。次は DAMP-VSEP（多曲、テンポ安定）で
+   同じ計装が baseline で出す数字を見たほうが本来の答えに近い。
+
+**次の手動アクション候補**: 上記のうち (1) か (3) を 20件で試すのが最小ステップ。
 
 ### その後
 - **M2**（必達）: オンライン `ReferenceAligner` を Orchestrator の Perception に接続 → arousal 推定 → 顔/画面フィードバック。
