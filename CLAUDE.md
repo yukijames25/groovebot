@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `5385aa3`（M0-2: Colab numpy<2 ピン）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `7ac4ef5`（M0' Tier 2 DAMP-S-AG: MIDI 参照 + tarball サブセット抽出）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
@@ -50,6 +50,25 @@
 2. **オフラインで** 歌唱/鼻歌を DTW で参照に整合し、復元された拍時刻列を `--beats` 形式に出力。
 3. 既存 `tools/eval_beat.py` で F／CMLt／AMLt を測定し、「ユーザ録音が無くてもアライメント精度の感触」を得る。
 4. 結果次第で M2 のオンライン化（online DTW / score following 系）へ移行。
+
+### M0' Tier 2 DAMP-S-AG（MIDI 参照、Amazing Grace） 初の実数字（2026-06-10）
+20 rendition × 2 経路 = 40 行。raw `data/amazing_grace.tar.gz`（18 GB、Smule ライセンス）から
+`tools.ingest_damp damp-s-ag --max-n 100` で先頭 100 件を `data/m0p_t2_damp/` に展開、
+うち先頭 20 件で `--reference-source midi` を走らせた（pyin が1件 ~78 秒で支配的なため、100 件は ~2.6 時間 = 後段）。
+
+- **chroma 経路** (n=20): F=0.298, CMLt=0.452, AMLt=0.484, RT=0.029
+- **pitch 経路** (n=20): F=0.199, CMLt=0.212, AMLt=0.225, RT=0.019
+
+所見:
+- Tier 1（~F=0.98）から大きく落ちる。理由: Amazing Grace は rubato 強い賛美歌で
+  別演者間のテンポ揺らぎが大きい、加えてアマチュア歌唱の音程/タイミング揺らぎ。
+- **chroma > pitch**: 弱い旋律でも chroma_cqt は formant 系のエネルギーから旋律寄りの
+  時間変化を拾えるのに対し、pyin は素人録音の breath/環境ノイズに弱い。
+- **CMLt ≈ AMLt**（両経路で差ほぼ無し）→ DTW は metric-level 取り違えは起こさない（構造的強み維持）。
+- RT-factor ≈ 0.02-0.03（オフライン、超高速）。
+- ばらつき大: chroma F は 0.07-0.52 と rendition 依存。歌唱品質との相関は次の集計で見る。
+
+`data/m0p_t2_damp_work/` に CSV 4 種。MIDI 参照ルートは ffmpeg 不在でも動くことを確認。
 
 ### その後
 - **M2**（必達）: オンライン `ReferenceAligner` を Orchestrator の Perception に接続 → arousal 推定 → 顔/画面フィードバック。
