@@ -16,6 +16,7 @@ from groovebot.align.features import (
     trim_silence,
 )
 from groovebot.align.midi_ref import MidiReference, load_reference_from_midi
+from groovebot.align.origin import estimate_origin_offset
 from groovebot.align.reference import ReferenceBundle, build_reference
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "ReferenceBundle",
     "build_reference",
     "consensus_f0",
+    "estimate_origin_offset",
     "extract_align_features",
     "f0_to_pitch_chroma",
     "load_reference_from_midi",

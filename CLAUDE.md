@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `9d6e524`（M0' Tier 2 DAMP-S-AG levers: subseq/trim/continuous pitch — opt-in, eval shows no help on Amazing Grace）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: 次セッション開始時に下記 [M0' Tier 2 DAMP-S-AG Lever A/B 実験（2026-06-13、20件）](#m0-tier-2-damp-s-ag-lever-ab-実験2026-06-1320件) 後のハッシュを記録。直前は `b55ae9f`。タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
@@ -113,6 +113,63 @@ silence_trim=False、pitch_mode=one-hot）を default として使う。
    同じ計装が baseline で出す数字を見たほうが本来の答えに近い。
 
 **次の手動アクション候補**: 上記のうち (1) か (3) を 20件で試すのが最小ステップ。
+
+### M0' Tier 2 DAMP-S-AG Lever A/B 実験（2026-06-13、20件）
+上記「真の天井候補」の (3) Sakoe-Chiba band を **Lever A**、(1) per-rendition origin calibration を
+**Lever B** として実装し、同じ subset20 で再測定。実装は **public IF 不変**、新パラメータは
+default 無効の opt-in。
+
+**実装した経路**:
+- `OfflineDTWAligner.band_rad` → librosa.sequence.dtw に `global_constraints=True, band_rad=value`。
+  full DTW (subseq=False) を維持しつつ warp の対角逸脱を制限。CLI: `--band-rad`。
+- `groovebot.align.origin.estimate_origin_offset` → query の `librosa.onset.onset_strength` と、
+  MIDI **note-on** 時刻列（`MidiReference.note_onsets`、GT である `MidiReference.beats` とは別）から
+  合成した onset 包絡を相互相関し、±max_lag 内のピーク lag を返す。
+  推定 lag を recovered beat から差し引いてから採点。CLI: `--origin-anchor`。
+- 補助: `experiments/run_m0p_t2_damp.py --max-renditions N` で先頭 N 件に限定。
+  `tools/_eval_levers.py` は throwaway の多コンフィグ掃引（pyin を rendition ごとに1回キャッシュ）。
+
+**★絶対規則（記録）**: lag 推定は **GT (`midi_ref.beats`) を一切参照しない**（テストリーク防止）。
+xcorr の参照側は `midi_ref.note_onsets`（audible attack 時刻、score の metric grid とは別量）。
+
+20件 F-measure（同一 `subset20`、`band_rad=0.10`、`max_lag_sec=2.0`）:
+
+| 条件 | F_chroma | F_pitch | CMLt_pitch | AMLt_pitch | lag_med [s] |
+|---|---:|---:|---:|---:|---:|
+| Baseline | 0.298 | 0.199 | 0.212 | 0.225 | 0.000 |
+| Lever A のみ (band) | 0.298 = | 0.196 ≈ | 0.219 | 0.230 | 0.000 |
+| Lever A + Lever 2 (continuous pitch) | 0.298 = | 0.206 ↑ | 0.170 ↓ | 0.175 ↓ | 0.000 |
+| Lever A + Lever B (band + anchor) | **0.324** ↑ | 0.210 ↑ | 0.228 | 0.239 | 0.046 |
+| Lever B のみ (anchor) | **0.324** ↑ | **0.213** ↑ | 0.221 | 0.233 | 0.046 |
+
+**判定**:
+- **Lever A は両経路で neutral**。`band_rad=0.10`（≈±19s 相当）は診断で見た 12-19s の対角逸脱を
+  そのまま許容してしまうため拘束として効かない。逆により狭い band は full DTW が無音区間を
+  境界スラックとして使う余地を奪う（前回の trim 失敗と同じ機序）ので安全側に倒れた。
+- **Lever B が両経路で +0.014 〜 +0.026 の小幅な実利得**。chroma F: 0.298 → 0.324 (+8.7% rel)、
+  pitch F: 0.199 → 0.213 (+7.0% rel)。median 推定 lag = 0.046s。
+- **Lever A + Lever B は Lever B 単独と同水準**（chroma 同値、pitch は微減 0.213→0.210）。
+  band は依然 neutral、ゲインは Lever B が独占。
+- **Lever 2（連続セミトーン）+ Lever A**: pitch F 微増 (+0.007) だが CMLt/AMLt が顕著に低下
+  （0.212→0.170, 0.225→0.175）。前回（Lever 2 のみ）と同じ「F が拍数で稼げても metric-level
+  整合が悪化」のパターン。本番では引き続き one-hot を default。
+
+**コードは残置**（後方互換の opt-in、テスト 173 passed / 2 skipped）。Lever B は **default off**
+だが、DAMP-S-AG MIDI ルートでは `--origin-anchor` を付けるのが推奨。
+
+**所見**:
+- 診断（LOW: +0.15s で F 0.07→0.41）が示唆した「per-rendition 系統オフセット」は実在するが、
+  median 0.046s（mean ~0.05s 程度）と思ったより小さい。20件の半分以上は |lag| < 0.05s で
+  本質的ゲインなし、一部の高 |lag| rendition だけが救われている形と推定。
+- 「真の天井」は band ではなく **anchor + 何か別の手** にある。次の梃子候補:
+  - **テンポ事前推定**（候補 2）: rubato による per-rendition テンポ揺らぎは band では取れない。
+    `librosa.beat.tempo` で rendition のテンポを推定し、reference を伸縮してから DTW。
+  - **データ多様性**（候補 4）: 賛美歌1曲では母集団効果が読めない。DAMP-VSEP（多曲、テンポ安定）
+    で同計装を走らせると baseline / Lever B のゲインがそのまま乗るかが見える。
+  - **band_rad のチューニング**: 0.10 は広すぎた。0.02-0.05 を試す価値はあるが、上記2つの
+    後にすべき（band 単体の上限は元々低い）。
+
+**次の手動アクション候補**: 候補 2（テンポ事前推定）を 20件で試す → だめなら候補 4 (DAMP-VSEP)。
 
 ### その後
 - **M2**（必達）: オンライン `ReferenceAligner` を Orchestrator の Perception に接続 → arousal 推定 → 顔/画面フィードバック。

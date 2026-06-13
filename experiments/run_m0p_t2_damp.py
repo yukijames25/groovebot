@@ -64,6 +64,7 @@ from groovebot.align.features import (
     trim_silence,
 )
 from groovebot.align.midi_ref import load_reference_from_midi
+from groovebot.align.origin import estimate_origin_offset
 from tools.eval_beat import score_beats
 from tools.ingest_damp import DampArrangement, DampRendition, discover_arrangements
 
@@ -157,6 +158,8 @@ def run_arrangement(
     designated: str | None = None,
     silence_trim: bool = False,
     pitch_mode: str = "one-hot",
+    origin_anchor: bool = False,
+    max_renditions: int | None = None,
     make_png: bool = True,
 ) -> list[dict]:
     """Score every rendition of `arrangement` against both paths.
@@ -187,11 +190,17 @@ def run_arrangement(
             "pitch_mode='continuous' requires reference_source='midi' "
             "(backing mode has no continuous melody reference)"
         )
+    if origin_anchor and reference_source != "midi":
+        raise ValueError(
+            "origin_anchor requires reference_source='midi' "
+            "(needs MIDI note-on times distinct from the GT beat grid)"
+        )
 
     sr = aligner.sample_rate
     hop = aligner.hop_length
 
     # -- Reference (beats + chroma) -----------------------------------------
+    midi_note_onsets: np.ndarray | None = None
     if reference_source == "midi":
         if arrangement.reference_midi is None:
             raise ValueError(
@@ -209,6 +218,7 @@ def run_arrangement(
             midi_ref.pitch_contour if pitch_mode == "continuous"
             else midi_ref.melody
         )
+        midi_note_onsets = midi_ref.note_onsets
     else:   # backing
         if arrangement.backing_wav is None:
             raise ValueError(
@@ -225,9 +235,13 @@ def run_arrangement(
     # first sung note sits at trimmed_t=0. In MIDI mode where MIDI[0] is
     # also the first sung note, GT == midi_ref.beats is now on the same
     # timeline as the recovered beats without any post-hoc shift.
+    selected_renditions = (
+        arrangement.renditions[: int(max_renditions)]
+        if max_renditions is not None else arrangement.renditions
+    )
     vocals: dict[str, np.ndarray] = {}
     f0s: dict[str, np.ndarray] = {}
-    for r in arrangement.renditions:
+    for r in selected_renditions:
         v = _load_mono_audio(r.vocal_wav, sr)
         if silence_trim:
             v, _leading, _trailing = trim_silence(v, sr, hop_length=hop)
@@ -235,7 +249,7 @@ def run_arrangement(
         f0s[r.rendition_id] = pyin_f0(v, sr, hop_length=hop)
 
     # -- Query set + melody reference ---------------------------------------
-    rendition_ids = [r.rendition_id for r in arrangement.renditions]
+    rendition_ids = [r.rendition_id for r in selected_renditions]
     if reference_source == "midi":
         query_ids = list(rendition_ids)
         melody_constant: np.ndarray | None = midi_melody
@@ -279,6 +293,8 @@ def run_arrangement(
                 gt_beats=beats,
                 feature_kind=kind,
                 pitch_mode=pitch_mode,
+                origin_anchor=origin_anchor,
+                midi_note_onsets=midi_note_onsets,
             )
             rows.append(row["scores"])
             if make_png:
@@ -306,12 +322,19 @@ def _score_one_path(
     gt_beats: np.ndarray,
     feature_kind: str,
     pitch_mode: str = "one-hot",
+    origin_anchor: bool = False,
+    midi_note_onsets: np.ndarray | None = None,
 ) -> dict:
     """Run one path and return the score row plus diagnostics for the PNG.
 
     In `pitch_mode="continuous"` the pitch path uses a (2, T) key-normalised
     semitone + voicing feature on both sides; the caller must supply the
     matching MIDI-side `melody_chroma=midi_ref.pitch_contour`.
+
+    When `origin_anchor=True`, the recovered beats are shifted by an
+    estimated lag computed via `estimate_origin_offset` (Lever B). The
+    estimator only consumes the audio and MIDI *note-on* times — never
+    the GT beat grid — so this calibration is not test leakage.
     """
     t0 = time.perf_counter()
     if feature_kind == "chroma":
@@ -334,6 +357,19 @@ def _score_one_path(
         raise ValueError(f"unknown feature_kind: {feature_kind!r}")
     wp = aligner.align(query_feats, ref_feats)
     recovered = aligner.map_reference_beats(wp, gt_beats)
+
+    anchor_lag = 0.0
+    if origin_anchor:
+        if midi_note_onsets is None or len(midi_note_onsets) == 0:
+            raise ValueError(
+                f"{arrangement_id}/{rendition_id}: origin_anchor requires "
+                "non-empty midi_note_onsets"
+            )
+        anchor_lag = estimate_origin_offset(
+            query_audio, midi_note_onsets, sr=sr, hop_length=hop,
+        )
+        recovered = recovered - anchor_lag
+
     proc_sec = time.perf_counter() - t0
 
     audio_sec = len(query_audio) / sr
@@ -348,6 +384,7 @@ def _score_one_path(
     row = asdict(scores)
     row["arrangement_id"] = arrangement_id
     row["feature_kind"] = feature_kind
+    row["anchor_lag_sec"] = float(anchor_lag)
     return {"scores": row, "recovered": recovered, "wp": wp}
 
 
@@ -445,8 +482,11 @@ def run_pipeline(
     melody_mode: str = "designated",
     designated: str | None = None,
     dtw_subseq: bool = False,
+    band_rad: float | None = None,
     silence_trim: bool = False,
     pitch_mode: str = "one-hot",
+    origin_anchor: bool = False,
+    max_renditions: int | None = None,
     make_png: bool = True,
     verbose: bool = True,
     vocal_glob: str = "vocal_*.wav",
@@ -456,6 +496,7 @@ def run_pipeline(
     aligner = OfflineDTWAligner(
         sample_rate=sample_rate, hop_length=hop_length,
         subseq=dtw_subseq,
+        band_rad=band_rad,
     )
     rows: list[dict] = []
     for a in discover_arrangements(Path(root), vocal_glob=vocal_glob):
@@ -486,6 +527,8 @@ def run_pipeline(
                 designated=designated,
                 silence_trim=silence_trim,
                 pitch_mode=pitch_mode,
+                origin_anchor=origin_anchor,
+                max_renditions=max_renditions,
                 make_png=make_png,
             )
         except Exception as e:
@@ -547,6 +590,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="enable subsequence DTW (boundary slack on the "
                          "reference axis). Lets DAMP-style renditions that "
                          "don't begin at MIDI[0] find the right anchor.")
+    ap.add_argument("--band-rad", type=float, default=None,
+                    help="Lever A: Sakoe-Chiba band radius as a fraction of "
+                         "max(Tq, Tr). Enables global_constraints on "
+                         "librosa.sequence.dtw. ~0.1 keeps the warp within "
+                         "10%% of the diagonal, suppressing the pitch path's "
+                         "off-diagonal drift seen in DAMP-S-AG diagnostics.")
     ap.add_argument("--silence-trim", action="store_true",
                     help="drop leading/trailing silence from each rendition "
                          "before alignment. In MIDI mode, this also puts the "
@@ -560,6 +609,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "'continuous' uses a 2-D key-normalised semitone + "
                          "voicing feature on both sides — requires MIDI mode "
                          "so the reference has a matching contour.")
+    ap.add_argument("--origin-anchor", action="store_true",
+                    help="Lever B: estimate a per-rendition time lag without "
+                         "consulting GT (cross-correlate query onset_strength "
+                         "vs synthetic MIDI note-on envelope) and subtract "
+                         "from recovered beats before scoring. MIDI mode only.")
+    ap.add_argument("--max-renditions", type=int, default=None,
+                    help="cap the number of renditions scored per arrangement "
+                         "(first N by sort order). Default: all.")
     ap.add_argument("--sr", type=int, default=22050)
     ap.add_argument("--hop", type=int, default=512)
     ap.add_argument("--no-png", action="store_true")
@@ -577,8 +634,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         melody_mode=args.melody_mode,
         designated=args.designated,
         dtw_subseq=args.dtw_subseq,
+        band_rad=args.band_rad,
         silence_trim=args.silence_trim,
         pitch_mode=args.pitch_mode,
+        origin_anchor=args.origin_anchor,
+        max_renditions=args.max_renditions,
         vocal_glob=args.vocal_glob,
         make_png=not args.no_png,
     )

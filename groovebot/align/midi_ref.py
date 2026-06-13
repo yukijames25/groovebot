@@ -10,7 +10,7 @@ Output mirrors what `DampReferenceBundle` carries, so the runner stays
 oblivious to where the reference came from.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +42,9 @@ class MidiReference:
     sample_rate: int             # frame-rate denominator (matches aligner)
     hop_length: int              # frame-rate denominator (matches aligner)
     tempo: float                 # representative BPM (median if variable)
+    note_onsets: np.ndarray = field(  # sorted note-on times (sec)
+        default_factory=lambda: np.empty(0, dtype=float)
+    )
 
 
 def load_reference_from_midi(
@@ -75,6 +78,7 @@ def load_reference_from_midi(
         pm, sample_rate, hop_length,
         voicing_weight=pitch_voicing_weight,
     )
+    note_onsets = _collect_note_onsets(pm)
     return MidiReference(
         beats=beats,
         downbeats=downbeats,
@@ -84,7 +88,28 @@ def load_reference_from_midi(
         sample_rate=sample_rate,
         hop_length=hop_length,
         tempo=tempo,
+        note_onsets=note_onsets,
     )
+
+
+def _collect_note_onsets(pm) -> np.ndarray:
+    """Sorted, deduped note-on times across non-drum instruments.
+
+    Distinct from `beats`: `beats` is the score's metric grid (used as GT for
+    scoring) while `note_onsets` is the audible attack times of melody/harmony
+    notes. The origin-anchor uses these *without ever looking at the beat grid*
+    so the calibration stays GT-non-referenced (see `groovebot.align.origin`).
+    """
+    onsets = []
+    for instrument in pm.instruments:
+        if instrument.is_drum:
+            continue
+        for note in instrument.notes:
+            onsets.append(float(note.start))
+    if not onsets:
+        return np.empty(0, dtype=float)
+    arr = np.asarray(sorted(set(onsets)), dtype=float)
+    return arr
 
 
 def _rasterize_notes(
