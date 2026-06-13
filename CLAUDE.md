@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: 次セッション開始時に下記 [M0' Tier 2 DAMP-S-AG Lever A/B 実験（2026-06-13、20件）](#m0-tier-2-damp-s-ag-lever-ab-実験2026-06-1320件) 後のハッシュを記録。直前は `b55ae9f`。タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `46be06f`（M0' Tier 2 DAMP-S-AG Lever A/B: band neutral, GT-non-referenced origin anchor +0.026 F chroma）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
