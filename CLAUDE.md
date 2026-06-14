@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `b49b7eb`（GrooveStyleSelector v1 縦スライス: 起動窓→log-mel→CNN(genre/mood)＋tempo/arousal ヒューリスティック→ノり方表→GrooveStyle テキストラベル）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: GrooveStyleSelector v2（genre ヘッド本物の数字: full GTZAN 1000曲、fault-filtered+artist-aware と naive stratified の両方を計装、リーク bias 可視化）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
@@ -41,6 +41,7 @@
 - **公開データ前処理**: `tools/prep_dataset.py`（Demucs で公開データから vocal 分離 ＋ 拍注釈を `--beats` 形式へ）、`experiments/run_gtzan_eval.py`, `notebooks/m0_gtzan_eval.ipynb`（Colab turnkey）。
 - **棚上げ**: 上記 Colab パイプラインによる**盲目 BeatNet** の数値化は、madmom が Python 3.10 縛りで Colab/Kaggle に乗らないため棚上げ（コードは削除しない、§10.2 副次・§14.3）。
 - **GrooveStyleSelector v1 縦スライス**（並行トラック、§14 モジュール節）: `groovebot/style/`（features=log-mel／model=小CNN genre+mood マルチヘッド／attributes=tempo+arousal ヒューリスティック／table=Yuki のノり方表ソフト mood 重み／select=起動窓→GrooveStyle）。`experiments/train_style.py` で GTZAN-mini で genre 学習、mood は MTG-Jamendo 待ちの決定的 stub。pytest 32 件、出力はテキストラベルのみ（JointCommand 橋渡しは後段）。著作権 J-pop は不使用、PyTorch CPU で完結。
+- **GrooveStyleSelector v2 genre ヘッド本物の数字**（2026-06-14、full GTZAN 1000曲、CPU）: `tools/gtzan_split.py` で fault-filtered+artist-aware split (jongpillee/music_dataset_split、Kereliuk 2015／Sturm 2013 出典) と naive stratified split を計装。`groovebot/style/augment.py` で SpecAugment + random time crop、`StyleCNN(dropout=0.3)` + val-acc early stopping (patience=8)。`jazz/jazz.00054.wav` のみ破損で除外ログ。**fault split: 最良 val 0.498 @ ep 12、test 0.431、train-val gap +0.222**。**naive split: 最良 val 0.620 @ ep 28、test 0.573、train-val gap +0.241**。naive−fault = **+12.2 pp val / +14.2 pp test** がリーク bias（GTZAN の既知 fault が稼ぐ楽観バイアス）。混同行列: fault 側は pop が sink クラス（country/hiphop/jazz/reggae/rock の自信ある誤分類を吸う）、classical のみ綺麗に分離。mood ヘッドは `--mood-weight 0.0` で勾配ゼロにしたまま wired のみ（MTG-Jamendo 待ち）。pytest 225 passed / 2 skipped。
 
 ### 決定（このセッションで方針転換）
 - 知覚の主軸を「盲目オンラインビート追跡」から「**参照情報つきオンラインアライメント（曲選択型）**」へ再センタリング。理由: (a) madmom 互換問題で死に筋、(b) カラオケ標的では参照アライメントの方が堅牢で、楽曲構造から先読みのノリも引き出せる。

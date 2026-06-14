@@ -62,3 +62,22 @@ def test_genre_and_mood_vocab_sizes_match_spec():
     assert len(GENRES) == 10
     assert len(MOODS) == 6
     assert set(MOODS) == {"aggressive", "happy", "sad", "calm", "dark", "epic"}
+
+
+def test_model_with_dropout_forward_still_works():
+    # default constructor (dropout=0) and dropout=0.3 must produce same
+    # output shapes; with dropout in eval mode the head_dropout is identity.
+    m0 = StyleCNN(n_mels=64, dropout=0.0)
+    m3 = StyleCNN(n_mels=64, dropout=0.3)
+    x = torch.randn(2, 1, 64, 100)
+    m0.eval(); m3.eval()
+    assert m0(x)["genre"].shape == m3(x)["genre"].shape == (2, len(GENRES))
+
+
+def test_model_dropout_train_mode_runs():
+    m = StyleCNN(n_mels=64, dropout=0.5)
+    m.train()
+    out = m(torch.randn(4, 1, 64, 120))
+    # finite logits even when dropout is heavy
+    assert torch.isfinite(out["genre"]).all()
+    assert torch.isfinite(out["mood"]).all()

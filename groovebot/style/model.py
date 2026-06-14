@@ -41,9 +41,11 @@ class StyleCNN(nn.Module):
         n_genres: int = len(GENRES),
         n_moods: int = len(MOODS),
         hidden: int = 128,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.n_mels = n_mels
+        self.dropout = float(dropout)
         self.backbone = nn.Sequential(
             _conv_block(1, 16),
             _conv_block(16, 32),
@@ -52,6 +54,10 @@ class StyleCNN(nn.Module):
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
         )
+        # Single dropout between the pooled embedding and the heads. Default
+        # 0 keeps v1 forward path bit-identical when checkpoints are loaded
+        # under the old constructor.
+        self.head_dropout = nn.Dropout(p=self.dropout)
         self.heads = nn.ModuleDict({
             "genre": nn.Linear(hidden, n_genres),
             "mood": nn.Linear(hidden, n_moods),
@@ -71,6 +77,7 @@ class StyleCNN(nn.Module):
                 f"expected (B,1,n_mels,T) or (B,n_mels,T), got shape {tuple(x.shape)}"
             )
         h = self.backbone(x)
+        h = self.head_dropout(h)
         return {name: head(h) for name, head in self.heads.items()}
 
     @torch.no_grad()

@@ -16,6 +16,7 @@ from groovebot.style.attributes import (
     estimate_arousal,
     estimate_tempo,
 )
+from groovebot.style.augment import random_time_crop, spec_augment
 from groovebot.style.features import log_mel_spectrogram
 from groovebot.style.model import GENRES, MOODS, StyleCNN
 from groovebot.style.select import GrooveStyle, GrooveStyleSelector
@@ -32,5 +33,7 @@ __all__ = [
     "estimate_arousal",
     "estimate_tempo",
     "log_mel_spectrogram",
+    "random_time_crop",
     "select_move",
+    "spec_augment",
 ]

@@ -681,6 +681,133 @@ print(style.as_text())
   `GrooveGenerator` still uses the M1 rule-based map. The two will
   meet once labels are stable.
 
+### v2 — genre head, real numbers (full GTZAN, two splits)
+
+v2 trains the genre head on the full GTZAN audio (1000 tracks) and
+reports both a fault-filtered + artist-aware split (honest) and a naive
+stratified split (optimistic baseline). The gap between the two is the
+leakage bias the GTZAN faults induce. The mood head is left in the
+network but `--mood-weight 0.0` (the new default) zeros its loss, so the
+backbone is not pulled toward the deterministic genre→mood STUB during
+v2 training.
+
+**Data**
+
+- Audio: Kaggle `andradaolteanu/gtzan-dataset-music-genre-classification`,
+  unpacked to `data/raw/gtzan_full/Data/genres_original/`.
+- Fault-filtered splits: `train_filtered.txt` / `valid_filtered.txt` /
+  `test_filtered.txt` from
+  [jongpillee/music_dataset_split](https://github.com/jongpillee/music_dataset_split)
+  (`GTZAN_split/`), following Kereliuk 2015 / Sturm 2013. 443 / 197 / 290 =
+  930 tracks; 70 removed as duplicates / mislabels / distortions; the
+  split keeps artists disjoint across train/val/test as far as the
+  known-artist coverage allows (GTZAN artist labels are partial —
+  artist-non-overlap is best-effort).
+- Probe drops: `sf.info` is called on every file at discovery. On the
+  Kaggle mirror, `jazz/jazz.00054.wav` consistently fails (the famous
+  Sturm-documented broken file); it is logged to
+  `report.json["skipped"]`.
+
+**Overfitting controls (small data, must-have)**
+
+- random time crop (`--random-crop`): per-clip random window of the
+  log-mel along the time axis, preventing position memorisation.
+- SpecAugment (`--specaugment`, Park et al. 2019): random frequency
+  and time masks zero out small bands of the mel.
+- head dropout (`--dropout 0.3`): default in v2.
+- val-acc early stopping (`--early-stopping-patience 8`): stop if val
+  accuracy does not improve for N consecutive epochs.
+
+**Run (two passes)**
+
+```bash
+# A — honest numbers
+python -m experiments.train_style \
+    --gtzan-root data/raw/gtzan_full/Data/genres_original \
+    --splits-dir data/raw/gtzan_splits \
+    --split-mode fault \
+    --out-dir data/style_full_fault \
+    --epochs 40 --batch-size 16 --dropout 0.3 \
+    --specaugment --random-crop \
+    --early-stopping-patience 8
+
+# B — leakage baseline
+python -m experiments.train_style \
+    --gtzan-root data/raw/gtzan_full/Data/genres_original \
+    --split-mode naive \
+    --out-dir data/style_full_naive \
+    --epochs 40 --batch-size 16 --dropout 0.3 \
+    --specaugment --random-crop \
+    --early-stopping-patience 8
+```
+
+Each pass writes:
+- `style_cnn.pt` — best-val checkpoint
+- `report.json` — full per-epoch history, best val acc + epoch, held-out
+  test acc, train-val gap at the best epoch, confusion matrix (counts +
+  row-normalised), representative `GrooveStyle` per test clip, source
+  attribution for the split, skipped-file log
+
+**Results — see `data/style_full_*/report.json`** (CPU runs, single
+laptop; values reproducible with `--seed 0`, 40 max epochs, patience 8):
+
+| split  | best val genre acc | test genre acc | train-val gap @ best |
+|--------|--------------------|----------------|----------------------|
+| fault  | 0.498 @ ep 12      | 0.431          | +0.222               |
+| naive  | 0.620 @ ep 28      | 0.573          | +0.241               |
+
+**Naive minus fault**: +12.2 pp val, +14.2 pp test. That delta is the
+leakage bias caused by GTZAN's known duplicates / repeated artists. The
+honest number for this model is the fault row; the naive row sets an
+upper bound on how much "ladder we get for free" by ignoring the
+faults.
+
+Naive-split confusion is much more diagonal than fault — most rows
+recognise their own class — because the test set contains tracks from
+artists the model already saw in train.
+
+Fault-split confusion (row-normalised, test set; rows = true, columns =
+predicted, top 4 chars):
+
+```
+       blue  clas  coun  disc  hiph  jazz  meta   pop  regg  rock
+ blue  0.03  0.03  0.03  0.00  0.00  0.52  0.00  0.00  0.00  0.39
+ clas  0.03  0.97  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+ coun  0.00  0.10  0.17  0.00  0.00  0.00  0.00  0.43  0.00  0.30
+ disc  0.00  0.00  0.07  0.03  0.14  0.00  0.03  0.07  0.31  0.34
+ hiph  0.00  0.00  0.00  0.00  0.26  0.00  0.00  0.67  0.07  0.00
+ jazz  0.04  0.07  0.04  0.00  0.00  0.22  0.00  0.63  0.00  0.00
+ meta  0.00  0.00  0.00  0.00  0.00  0.00  0.78  0.04  0.04  0.15
+  pop  0.00  0.00  0.00  0.00  0.00  0.00  0.00  1.00  0.00  0.00
+ regg  0.00  0.04  0.00  0.00  0.00  0.04  0.00  0.50  0.42  0.00
+ rock  0.03  0.03  0.03  0.03  0.00  0.00  0.03  0.34  0.09  0.41
+```
+
+Notes from the confusion: classical (0.97) and pop (1.00) are extremes
+on opposite axes — classical is genuinely well separated, pop is a
+*sink* class that collects mis-confident predictions from
+country/hiphop/jazz/reggae/rock. The model is too eager to predict pop.
+Likely contributors: pop sits in the middle of the mel-statistics
+distribution (mid tempo, mid spectral centroid), and v2's single-crop
++ constant-LR training doesn't push the head out of that local optimum.
+A weighted cross-entropy or multi-crop test-time averaging would
+plausibly help; both are deferred.
+
+### Limits (v2, honest)
+
+- **GTZAN published faults make every number slightly optimistic**, even
+  under the fault-filtered split. Sturm 2013 documents repetitions,
+  mislabels, and distortions; the jongpillee filter removes the worst
+  but artist coverage is partial.
+- **Mood head is still STUB.** v2 zeros its loss; its accuracy in the
+  reports is uninformative. MTG-Jamendo / FMA mood wiring is the
+  v3 task.
+- **Single-window inference.** v2 trains on a single crop per epoch
+  (random in train, center in val/test). Multi-crop averaging at
+  inference would likely lift test acc 2–5 pp; deferred.
+- **No fine-grained learning rate schedule.** v2 uses constant Adam
+  `lr=1e-3`. A warmup + cosine schedule is the obvious next lever.
+
 ## Layout
 
 ```
@@ -698,9 +825,10 @@ groovebot/
     dtw_align.py              OfflineDTWAligner + map_reference_beats
     reference.py              ReferenceBundle + build_reference (Demucs lazy import) for Tier 2
     midi_ref.py               MidiReference + load_reference_from_midi (pretty_midi; DAMP-S-AG MIDI route)
-  style/                      GrooveStyleSelector v1 (startup style picker, parallel track)
+  style/                      GrooveStyleSelector (startup style picker, parallel track)
     features.py               log-mel spectrogram (5-10 s startup window)
-    model.py                  StyleCNN: small 4-block CNN + genre/mood multi-head
+    model.py                  StyleCNN: small 4-block CNN + genre/mood multi-head + head dropout
+    augment.py                random_time_crop + SpecAugment (train-only)
     attributes.py             tempo (librosa.beat) + arousal (RMS × onset density)
     table.py                  Yuki's nori table: (genre, arousal, mood probs) -> (move, intensity)
     select.py                 GrooveStyleSelector — top-level wiring -> GrooveStyle text labels
@@ -709,6 +837,7 @@ tools/
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
   prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
   ingest_damp.py              DAMP-VSEP / DAMP-S-AG adapter: list (discovery) + damp-s-ag (stream tarball subset)
+  gtzan_split.py              full GTZAN discovery (sf.info probe) + naive stratified + jongpillee fault-filtered splits
   _build_m0_notebook.py       regenerates notebooks/m0_gtzan_eval.ipynb (source of truth)
 experiments/
   run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate (shelved blind path)
