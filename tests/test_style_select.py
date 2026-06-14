@@ -106,3 +106,49 @@ def test_selector_handles_short_window():
     audio = _synth_click_track(SR, duration_sec=2.0, bpm=140.0)
     style = selector.select(audio, SR)
     assert style.move in MOVES
+
+
+def _mock_panns_emb(audio, sr):
+    import numpy as np
+    from groovebot.style.backbone import EMBEDDING_DIM
+    rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2) + 1e-9))
+    rng = np.random.default_rng(int(rms * 1e6) % (2**31))
+    return rng.standard_normal(EMBEDDING_DIM).astype(np.float32)
+
+
+def test_selector_embedding_mode_end_to_end():
+    from groovebot.style.backbone import PannsBackbone, EMBEDDING_DIM
+    from groovebot.style.model import StyleHead
+
+    backbone = PannsBackbone(_inference_fn=_mock_panns_emb)
+    head = StyleHead(emb_dim=EMBEDDING_DIM)
+    sel = GrooveStyleSelector(backbone=backbone, head=head)
+    assert sel.mode == "embedding"
+    audio = _synth_click_track(SR, 5.0, bpm=120.0)
+    style = sel.select(audio, SR)
+    assert style.move in MOVES
+    assert style.genre in GENRES
+    assert style.mood in MOODS
+    assert 0.0 <= style.intensity <= 1.0
+
+
+def test_selector_rejects_model_plus_backbone():
+    from groovebot.style.backbone import PannsBackbone, EMBEDDING_DIM
+    from groovebot.style.model import StyleCNN, StyleHead
+    import pytest
+
+    backbone = PannsBackbone(_inference_fn=_mock_panns_emb)
+    head = StyleHead(emb_dim=EMBEDDING_DIM)
+    with pytest.raises(ValueError, match="not both"):
+        GrooveStyleSelector(
+            model=StyleCNN(n_mels=64), backbone=backbone, head=head,
+        )
+
+
+def test_selector_rejects_partial_v3_args():
+    from groovebot.style.backbone import PannsBackbone
+    import pytest
+
+    backbone = PannsBackbone(_inference_fn=_mock_panns_emb)
+    with pytest.raises(ValueError, match="together"):
+        GrooveStyleSelector(backbone=backbone)  # missing head

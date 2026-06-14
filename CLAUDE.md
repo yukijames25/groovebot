@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `e67a80c`（GrooveStyleSelector v2: genre ヘッド本物の数字 — full GTZAN 1000曲、fault-filtered+artist-aware と naive stratified の両方を計装、SpecAugment+random crop+dropout+early stopping、リーク bias 可視化）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: GrooveStyleSelector v3（PANNs CNN14 凍結転移＋MTG-Jamendo mood ヘッド: genre fault test 0.431 → **0.817** (+38.6 pp)、訓練-検証 gap +22.2 pp → +2.6 pp、混同行列の pop sink 解消）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
@@ -42,6 +42,7 @@
 - **棚上げ**: 上記 Colab パイプラインによる**盲目 BeatNet** の数値化は、madmom が Python 3.10 縛りで Colab/Kaggle に乗らないため棚上げ（コードは削除しない、§10.2 副次・§14.3）。
 - **GrooveStyleSelector v1 縦スライス**（並行トラック、§14 モジュール節）: `groovebot/style/`（features=log-mel／model=小CNN genre+mood マルチヘッド／attributes=tempo+arousal ヒューリスティック／table=Yuki のノり方表ソフト mood 重み／select=起動窓→GrooveStyle）。`experiments/train_style.py` で GTZAN-mini で genre 学習、mood は MTG-Jamendo 待ちの決定的 stub。pytest 32 件、出力はテキストラベルのみ（JointCommand 橋渡しは後段）。著作権 J-pop は不使用、PyTorch CPU で完結。
 - **GrooveStyleSelector v2 genre ヘッド本物の数字**（2026-06-14、full GTZAN 1000曲、CPU）: `tools/gtzan_split.py` で fault-filtered+artist-aware split (jongpillee/music_dataset_split、Kereliuk 2015／Sturm 2013 出典) と naive stratified split を計装。`groovebot/style/augment.py` で SpecAugment + random time crop、`StyleCNN(dropout=0.3)` + val-acc early stopping (patience=8)。`jazz/jazz.00054.wav` のみ破損で除外ログ。**fault split: 最良 val 0.498 @ ep 12、test 0.431、train-val gap +0.222**。**naive split: 最良 val 0.620 @ ep 28、test 0.573、train-val gap +0.241**。naive−fault = **+12.2 pp val / +14.2 pp test** がリーク bias（GTZAN の既知 fault が稼ぐ楽観バイアス）。混同行列: fault 側は pop が sink クラス（country/hiphop/jazz/reggae/rock の自信ある誤分類を吸う）、classical のみ綺麗に分離。mood ヘッドは `--mood-weight 0.0` で勾配ゼロにしたまま wired のみ（MTG-Jamendo 待ち）。pytest 225 passed / 2 skipped。
+- **GrooveStyleSelector v3 転移学習＋mood 実装**（2026-06-14、§14 v3 仕様節）: `groovebot/style/backbone.py` で **PANNs CNN14**（Kong 2020、AudioSet 事前学習、Zenodo 3987831、340 MB ckpt→`data/raw/`）を凍結ラップ、`.npy` キャッシュ（`data/style_emb_*/`、gitignore）で 1 曲 1 度だけ embed。`groovebot/style/model.py` に `StyleHead`（2048d 埋め込み→256 隠れ→genre/mood マルチヘッド、dropout 0.3）。`select.py` は v1/v2 (StyleCNN) と v3 (backbone+head) を分岐、`GrooveStyleSelector.from_panns(ckpt, head_weights)` で v3 構築。public 出力契約 `GrooveStyle` は不変。**genre fault test: 0.431 → 0.817 (+38.6 pp)、val gap +0.222 → +0.026** — 凍結バックボーン×小ヘッドで過学習が消える。混同行列の **pop sink が解消**（v2: pop 1.00 だが他クラス収束 → v3: pop 0.77 で対角支配、classical 1.00、jazz 1.00、disco 0.90、hiphop 0.85、metal 0.78、reggae 0.73、rock 0.72、country 0.73、blues 0.71）。precompute 285s/1000曲、ヘッド学習 0.1s/epoch。mood は `groovebot/style/mood_mapping.py`（MTG 59 タグ→6 クラス、38 mapped/18 theme drop/3 ambiguous drop、`drop_on_disagreement` default）＋`tools/ingest_mtg_moodtheme.py`（TSV→manifest CSV）＋`experiments/train_mood_tl.py`（artist 非重複 split、`--synthetic-stub` で配線確認、実 MTG は upstream `download.py --from --to` で有界 DL）。pytest 257 passed / 2 skipped（v3 で +32 件）。著作権 J-pop 不使用、PANNs ckpt/MTG audio とも gitignore。JointCommand 橋渡しは引き続き後段。
 
 ### 決定（このセッションで方針転換）
 - 知覚の主軸を「盲目オンラインビート追跡」から「**参照情報つきオンラインアライメント（曲選択型）**」へ再センタリング。理由: (a) madmom 互換問題で死に筋、(b) カラオケ標的では参照アライメントの方が堅牢で、楽曲構造から先読みのノリも引き出せる。

@@ -97,3 +97,64 @@ def _conv_block(in_ch: int, out_ch: int) -> nn.Sequential:
         nn.ReLU(inplace=True),
         nn.MaxPool2d(2),
     )
+
+
+# v3: transfer-learning head. Operates on a frozen PANNs CNN14
+# 2048-d embedding (see groovebot/style/backbone.py). This is the
+# primary head from v3 onwards; StyleCNN above is retained so v1/v2
+# tests and checkpoints keep working.
+PANNS_EMBEDDING_DIM = 2048
+
+
+class StyleHead(nn.Module):
+    """Small MLP over a frozen embedding, with genre + mood heads.
+
+    Architecture: shared `Linear(emb_dim, hidden) -> ReLU -> Dropout`,
+    then a `Linear(hidden, n_*)` per head registered in a ModuleDict so
+    the same extension pattern as `StyleCNN` applies (add a tempo head
+    later by registering one more module).
+    """
+
+    def __init__(
+        self,
+        emb_dim: int = PANNS_EMBEDDING_DIM,
+        n_genres: int = len(GENRES),
+        n_moods: int = len(MOODS),
+        hidden: int = 256,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.emb_dim = int(emb_dim)
+        self.dropout = float(dropout)
+        self.shared = nn.Sequential(
+            nn.Linear(self.emb_dim, hidden),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=self.dropout),
+        )
+        self.heads = nn.ModuleDict({
+            "genre": nn.Linear(hidden, n_genres),
+            "mood": nn.Linear(hidden, n_moods),
+        })
+
+    def forward(self, emb: torch.Tensor) -> dict[str, torch.Tensor]:
+        """`emb` shape: (emb_dim,) or (B, emb_dim). Returns dict of
+        per-head logits."""
+        if emb.dim() == 1:
+            emb = emb.unsqueeze(0)
+        if emb.dim() != 2:
+            raise ValueError(
+                f"expected (emb_dim,) or (B, emb_dim), got shape {tuple(emb.shape)}"
+            )
+        if emb.shape[-1] != self.emb_dim:
+            raise ValueError(
+                f"emb last dim {emb.shape[-1]} != head emb_dim {self.emb_dim}"
+            )
+        h = self.shared(emb)
+        return {name: head(h) for name, head in self.heads.items()}
+
+    @torch.no_grad()
+    def predict_probs(self, emb: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Softmax view of `forward`."""
+        self.eval()
+        logits = self.forward(emb)
+        return {name: F.softmax(logit, dim=-1) for name, logit in logits.items()}

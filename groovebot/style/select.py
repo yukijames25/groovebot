@@ -1,19 +1,29 @@
 """groovebot.style.select — top-level GrooveStyleSelector.
 
-Wires the pieces together:
+Two modes, both produce the same `GrooveStyle` text-label contract:
 
-    audio (startup 5-10 s window)
-        ├── features.log_mel_spectrogram ─► StyleCNN ─► (genre_probs, mood_probs)
-        ├── attributes.estimate_tempo    ─► tempo BPM
-        └── attributes.estimate_arousal  ─► arousal 0..1  ─► arousal_bucket
-                                                                │
-                                table.select_move(genre,arousal_bucket,mood_probs)
-                                                                │
-                                                                ▼
-                                                          GrooveStyle
+  * **v1/v2 CNN path** (StyleCNN end-to-end from log-mel):
+        log_mel_spectrogram -> StyleCNN -> (genre_probs, mood_probs)
+        attributes.estimate_tempo  / arousal -> tempo / bucket
+        table.select_move -> GrooveStyle
+
+  * **v3 transfer-learning path** (frozen PANNs CNN14 + MLP head):
+        PannsBackbone.embed -> StyleHead -> (genre_probs, mood_probs)
+        (tempo / arousal / table identical to above)
+
+The public `select(audio, sr) -> GrooveStyle` signature does not change
+between v1, v2, v3. Pick a constructor:
+
+  * `GrooveStyleSelector()`         — v1/v2 CNN, random weights
+  * `GrooveStyleSelector(model=...)`— v1/v2 CNN, loaded weights
+  * `GrooveStyleSelector(backbone=PannsBackbone(...), head=StyleHead())`
+        — v3 transfer-learning
+  * `GrooveStyleSelector.from_panns(ckpt_path, head_weights=...)`
+        — convenience for the v3 path
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -23,28 +33,23 @@ from groovebot.style.attributes import (
     estimate_arousal,
     estimate_tempo,
 )
+from groovebot.style.backbone import EMBEDDING_DIM, PANNS_SR, PannsBackbone
 from groovebot.style.features import (
     DEFAULT_N_MELS,
     DEFAULT_SR,
     log_mel_spectrogram,
 )
-from groovebot.style.model import GENRES, MOODS, StyleCNN
+from groovebot.style.model import GENRES, MOODS, StyleCNN, StyleHead
 from groovebot.style.table import select_move
 
 
 @dataclass
 class GrooveStyle:
-    """Text-label output of `GrooveStyleSelector`.
-
-    `move` is one of `groovebot.style.table.MOVES`. `intensity` is the
-    0..1 "how big / how fast" scalar from the table. The remaining fields
-    expose the underlying attributes so the downstream renderer (M2) and
-    learned generator (M3) can use whichever signal they want.
-    """
+    """Text-label output of `GrooveStyleSelector`. Unchanged since v1."""
     move: str
     intensity: float
     genre: str
-    mood: str           # argmax mood label (label only — the table used soft probs)
+    mood: str
     mood_probs: dict[str, float]
     genre_probs: dict[str, float]
     tempo_bpm: float
@@ -60,42 +65,101 @@ class GrooveStyle:
 
 
 class GrooveStyleSelector:
-    """End-to-end style selector. v1: text-label output only.
-
-    Holds one `StyleCNN` and runs feature → model → table on each call.
-    Stateless across calls (the selector is meant to be invoked once per
-    song, during the startup window).
-    """
+    """End-to-end style selector. Two model paths share one selector
+    (the call sites in M2 stay stable across the v2 → v3 migration)."""
 
     def __init__(
         self,
         model: StyleCNN | None = None,
         *,
+        backbone: PannsBackbone | None = None,
+        head: StyleHead | None = None,
         target_sr: int = DEFAULT_SR,
         n_mels: int = DEFAULT_N_MELS,
         device: str | torch.device | None = None,
     ):
         self.target_sr = int(target_sr)
         self.n_mels = int(n_mels)
-        if model is None:
-            model = StyleCNN(n_mels=self.n_mels)
-        self.model = model
         self.device = torch.device(device) if device is not None else torch.device("cpu")
-        self.model.to(self.device)
-        self.model.eval()
 
-    def select(self, audio: np.ndarray, sr: int) -> GrooveStyle:
-        """Pick a GrooveStyle for the given startup window."""
+        if backbone is not None or head is not None:
+            if backbone is None or head is None:
+                raise ValueError(
+                    "GrooveStyleSelector: backbone and head must be passed "
+                    "together (both define the v3 transfer-learning path)."
+                )
+            if model is not None:
+                raise ValueError(
+                    "GrooveStyleSelector: pass either `model` (v1/v2 CNN) "
+                    "or `backbone`+`head` (v3), not both."
+                )
+            self.mode = "embedding"
+            self.backbone = backbone
+            self.head = head
+            self.head.to(self.device)
+            self.head.eval()
+            self.model = None
+        else:
+            self.mode = "cnn"
+            if model is None:
+                model = StyleCNN(n_mels=self.n_mels)
+            self.model = model
+            self.model.to(self.device)
+            self.model.eval()
+            self.backbone = None
+            self.head = None
+
+    @classmethod
+    def from_panns(
+        cls,
+        checkpoint_path: str | Path,
+        *,
+        head_weights: str | Path | None = None,
+        emb_dim: int = EMBEDDING_DIM,
+        device: str | torch.device | None = None,
+    ) -> "GrooveStyleSelector":
+        """Build a v3 selector. `checkpoint_path` is the PANNs CNN14
+        ckpt (`Cnn14_mAP=0.431.pth`); `head_weights` is a torch state
+        dict for `StyleHead` (skip for random head — useful for smoke
+        tests)."""
+        dev = "cpu" if device is None else str(device)
+        backbone = PannsBackbone(checkpoint_path, device=dev)
+        head = StyleHead(emb_dim=emb_dim)
+        if head_weights is not None:
+            ck = torch.load(str(head_weights), map_location="cpu")
+            sd = ck.get("state_dict", ck) if isinstance(ck, dict) else ck
+            head.load_state_dict(sd)
+        return cls(backbone=backbone, head=head, device=device)
+
+    def _predict_cnn(self, audio: np.ndarray, sr: int) -> tuple[dict, dict]:
         mel = log_mel_spectrogram(
-            audio, sr,
-            target_sr=self.target_sr, n_mels=self.n_mels,
+            audio, sr, target_sr=self.target_sr, n_mels=self.n_mels,
         )
         x = torch.from_numpy(mel).unsqueeze(0).unsqueeze(0).to(self.device)
         probs = self.model.predict_probs(x)
-        genre_probs_arr = probs["genre"].squeeze(0).cpu().numpy()
-        mood_probs_arr = probs["mood"].squeeze(0).cpu().numpy()
-        genre_probs = {g: float(p) for g, p in zip(GENRES, genre_probs_arr)}
-        mood_probs = {m: float(p) for m, p in zip(MOODS, mood_probs_arr)}
+        gp = probs["genre"].squeeze(0).cpu().numpy()
+        mp = probs["mood"].squeeze(0).cpu().numpy()
+        return (
+            {g: float(p) for g, p in zip(GENRES, gp)},
+            {m: float(p) for m, p in zip(MOODS, mp)},
+        )
+
+    def _predict_embedding(self, audio: np.ndarray, sr: int) -> tuple[dict, dict]:
+        emb = self.backbone.embed(audio, sr)
+        x = torch.from_numpy(emb).unsqueeze(0).to(self.device)
+        probs = self.head.predict_probs(x)
+        gp = probs["genre"].squeeze(0).cpu().numpy()
+        mp = probs["mood"].squeeze(0).cpu().numpy()
+        return (
+            {g: float(p) for g, p in zip(GENRES, gp)},
+            {m: float(p) for m, p in zip(MOODS, mp)},
+        )
+
+    def select(self, audio: np.ndarray, sr: int) -> GrooveStyle:
+        if self.mode == "embedding":
+            genre_probs, mood_probs = self._predict_embedding(audio, sr)
+        else:
+            genre_probs, mood_probs = self._predict_cnn(audio, sr)
 
         genre = max(genre_probs, key=genre_probs.get)
         mood_argmax = max(mood_probs, key=mood_probs.get)

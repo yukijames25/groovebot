@@ -808,6 +808,202 @@ plausibly help; both are deferred.
 - **No fine-grained learning rate schedule.** v2 uses constant Adam
   `lr=1e-3`. A warmup + cosine schedule is the obvious next lever.
 
+### v3 — transfer learning (frozen PANNs CNN14) + real mood head
+
+v3 swaps the v2 small-from-scratch StyleCNN backbone for a **frozen,
+pretrained PANNs CNN14** (Kong et al. 2020, trained on AudioSet) and
+puts an MLP `StyleHead` on top of its 2048-d clip embedding. The
+public selector signature does not change — `select(audio, sr) ->
+GrooveStyle` still produces the same dataclass with the same fields.
+
+Mood gets a real head too: `tools/ingest_mtg_moodtheme.py` joins the
+MTG-Jamendo `autotagging_moodtheme` corpus to a 38-tag → 6-class
+mapping (`groovebot/style/mood_mapping.py`), and
+`experiments/train_mood_tl.py` trains the mood head with an
+artist-non-overlap split. The v1/v2 deterministic genre→mood STUB is
+retired.
+
+**New deps (CPU, light beyond the v2 stack)**
+
+- `panns-inference` (PyTorch) — pretrained CNN14 wrapper. Install:
+  `pip install panns-inference`.
+- `Cnn14_mAP=0.431.pth` (~340 MB) — download once to
+  `data/raw/Cnn14_mAP=0.431.pth`:
+
+  ```bash
+  curl -fSL -o "data/raw/Cnn14_mAP=0.431.pth" \
+    "https://zenodo.org/record/3987831/files/Cnn14_mAP%3D0.431.pth?download=1"
+  ```
+
+  Windows note: `panns_inference` itself tries to fetch a small
+  AudioSet labels CSV via `wget` at import time. Pre-place it:
+
+  ```bash
+  mkdir -p "$HOME/panns_data"
+  curl -fsSL "https://raw.githubusercontent.com/qiuqiangkong/audioset_tagging_cnn/master/metadata/class_labels_indices.csv" \
+    -o "$HOME/panns_data/class_labels_indices.csv"
+  ```
+
+  Both files are gitignored under `data/raw/`.
+
+**Selector API (unchanged contract, new constructor path)**
+
+```python
+from groovebot.style import GrooveStyleSelector
+
+# v3 — frozen PANNs backbone + trained head
+sel = GrooveStyleSelector.from_panns(
+    "data/raw/Cnn14_mAP=0.431.pth",
+    head_weights="data/style_v3_fault/style_head.pt",
+)
+# or equivalently:
+# sel = GrooveStyleSelector(backbone=PannsBackbone(ckpt), head=StyleHead())
+
+style = sel.select(audio, sr)         # → GrooveStyle, same dataclass
+print(style.as_text())                # → "headbang@0.95 (metal/aggressive, ...)"
+```
+
+**v3 genre — fault-filtered split, GTZAN 930 tracks**
+
+```bash
+python -m experiments.train_genre_tl \
+    --gtzan-root data/raw/gtzan_full/Data/genres_original \
+    --splits-dir data/raw/gtzan_splits \
+    --panns-ckpt "data/raw/Cnn14_mAP=0.431.pth" \
+    --cache-dir data/style_emb_gtzan \
+    --out-dir data/style_v3_fault \
+    --split-mode fault \
+    --epochs 40 --batch-size 32 --dropout 0.3 \
+    --window-sec 10.0 --early-stopping-patience 10
+```
+
+Precompute takes ~5 min on CPU (PANNs forward is ~0.3 s per 10 s clip
+after warm-up). Head training is sub-second per epoch on cached `.npy`
+embeddings. Cached embeddings stay valid across re-runs.
+
+**Genre results — v2 vs v3 (fault split, 930 tracks, same artist-non-overlap)**
+
+| version | best val | test    | train-val gap @ best |
+|---------|---------:|--------:|---------------------:|
+| v2      | 0.498    | 0.431   | +0.222               |
+| v3      | **0.761**| **0.817** | **+0.026**         |
+
+v3 lifts test accuracy by **+38.6 pp** while shrinking the train-val
+gap from +22 pp to +3 pp — the regularisation drama goes away because
+the head is tiny and the embedding is frozen.
+
+v3 fault-split confusion (row-normalised, test = 290 clips):
+
+```
+       blue  clas  coun  disc  hiph  jazz  meta   pop  regg  rock
+ blue  0.71  0.00  0.07  0.00  0.00  0.03  0.00  0.00  0.10  0.10
+ clas  0.00  1.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00  0.00
+ coun  0.03  0.00  0.73  0.07  0.00  0.00  0.00  0.03  0.00  0.13
+ disc  0.00  0.00  0.00  0.90  0.00  0.00  0.00  0.03  0.03  0.03
+ hiph  0.00  0.00  0.04  0.04  0.85  0.00  0.00  0.04  0.04  0.00
+ jazz  0.00  0.00  0.00  0.00  0.00  1.00  0.00  0.00  0.00  0.00
+ meta  0.00  0.00  0.00  0.04  0.00  0.00  0.78  0.00  0.00  0.18
+  pop  0.00  0.00  0.00  0.17  0.03  0.00  0.00  0.77  0.00  0.03
+ regg  0.00  0.00  0.08  0.08  0.12  0.00  0.00  0.00  0.73  0.00
+ rock  0.03  0.00  0.03  0.03  0.03  0.00  0.09  0.03  0.03  0.72
+```
+
+The v2 "pop sink" disappears: pop is now correctly classified 77 % of
+the time and other classes no longer collapse into it. Classical and
+jazz reach 100 % — both are easy targets at 10 s because they have
+strong distributional fingerprints AudioSet's pretraining captures.
+Rock confuses with country (3 %), pop (3 %), reggae (3 %), metal (9 %),
+which is roughly the human ear's experience.
+
+**v3 mood — MTG-Jamendo `autotagging_moodtheme`**
+
+1. Get the audio. Use the official MTG download script (the dataset is
+   CC but redistribution from us would be impolite):
+
+   ```bash
+   git clone https://github.com/MTG/mtg-jamendo-dataset
+   cd mtg-jamendo-dataset
+   python scripts/download/download.py \
+       --dataset autotagging_moodtheme \
+       --type audio-low \
+       --output-dir <YOUR>/data/raw/mtg_moodtheme \
+       --from 00 --to 02     # bounded to 3 archives ≈ 3000 clips ≈ 1.8 GB
+   ```
+
+   The `--from / --to` flags are the project-policy bound: enough clips
+   for a 38-tag mood head, far short of the 18 k-clip full subset.
+
+2. Build the manifest:
+
+   ```bash
+   python -m tools.ingest_mtg_moodtheme \
+       --audio-root data/raw/mtg_moodtheme \
+       --tsv mtg-jamendo-dataset/data/autotagging_moodtheme.tsv \
+       --out-csv data/mtg_moodtheme_manifest.csv \
+       --conflict-rule drop_on_disagreement
+   ```
+
+3. Train:
+
+   ```bash
+   python -m experiments.train_mood_tl \
+       --manifest data/mtg_moodtheme_manifest.csv \
+       --audio-root data/raw/mtg_moodtheme \
+       --panns-ckpt "data/raw/Cnn14_mAP=0.431.pth" \
+       --cache-dir data/style_emb_mtg \
+       --out-dir data/style_v3_mood \
+       --epochs 40 --batch-size 64 --dropout 0.3
+   ```
+
+Until the MTG download lands, the training loop is wired end-to-end
+via the synthetic-stub mode (class-conditional Gaussian embeddings,
+useful only for verifying the loss / split / report machinery — the
+numbers it produces are noise):
+
+```bash
+python -m experiments.train_mood_tl --synthetic-stub \
+    --out-dir data/style_v3_mood_stub --epochs 8
+```
+
+The output `report.json` carries an explicit `is_stub: true` so
+nobody mistakes it for a real mood accuracy.
+
+**Tag mapping — 59 MTG tags → 6 v3 mood classes**
+
+`groovebot/style/mood_mapping.py` ships an editable mapping:
+
+- 38 mood tags routed to `{aggressive, happy, sad, calm, dark, epic}`.
+- 18 theme tags (`advertising`, `christmas`, `game`, ...) dropped from
+  training.
+- 3 ambiguous tags (`cool`, `melodic`, `powerful`) dropped.
+- Conflict rule defaults to `drop_on_disagreement` (cleaner data);
+  `first_match` falls back to `MOODS` order when needed.
+
+`tests/test_mood_mapping.py` guards the snapshot: every MTG tag must
+be either mapped or dropped, every mapped class must live in `MOODS`,
+and the canonical tag count is asserted (59) so a quiet MTG upstream
+revision shouts at us.
+
+### Limits (v3, honest)
+
+- **PANNs CNN14 was pretrained on AudioSet** which contains some
+  Jamendo / GTZAN distribution. The +38 pp jump is partly genuine
+  feature transfer and partly that pretraining and target distributions
+  overlap. It is still a fair feature-quality measure, but should not
+  be cited as a from-scratch result.
+- **Mood head is still bounded by MTG label noise.** Crowdsourced
+  tags, multiple-mood clips, and tag bias (`happy` is over-represented;
+  `dark` is sparse) all affect the numbers. The drop-on-disagreement
+  rule trades coverage for clarity; flipping to `first_match` raises
+  recall but mixes classes. Both runs are reported when both have data.
+- **MTG download is gated behind the upstream tool.** We deliberately do
+  not redistribute their audio; v3 wires the manifest / training but
+  does not ship a one-click data pull. Use the bounded `--from / --to`
+  flags.
+- **JointCommand bridge still deferred.** v3 outputs are still text
+  labels via the same `GrooveStyle` dataclass; the path to actual
+  joint trajectories (M3 generator) is the next milestone.
+
 ## Layout
 
 ```
@@ -826,25 +1022,30 @@ groovebot/
     reference.py              ReferenceBundle + build_reference (Demucs lazy import) for Tier 2
     midi_ref.py               MidiReference + load_reference_from_midi (pretty_midi; DAMP-S-AG MIDI route)
   style/                      GrooveStyleSelector (startup style picker, parallel track)
-    features.py               log-mel spectrogram (5-10 s startup window)
-    model.py                  StyleCNN: small 4-block CNN + genre/mood multi-head + head dropout
+    features.py               log-mel spectrogram (5-10 s startup window; v1/v2 path)
+    model.py                  StyleCNN (v1/v2) + StyleHead (v3 MLP on PANNs embedding)
     augment.py                random_time_crop + SpecAugment (train-only)
+    backbone.py               PannsBackbone — frozen PANNs CNN14 + .npy cache (v3 transfer)
+    mood_mapping.py           MTG-Jamendo 59 moodtheme tags → 6 v3 mood classes
     attributes.py             tempo (librosa.beat) + arousal (RMS × onset density)
     table.py                  Yuki's nori table: (genre, arousal, mood probs) -> (move, intensity)
-    select.py                 GrooveStyleSelector — top-level wiring -> GrooveStyle text labels
+    select.py                 GrooveStyleSelector — v1/v2 CNN or v3 backbone+head -> GrooveStyle
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
   prep_dataset.py             public-dataset prep: annotation -> .beats; Demucs vocal separation (Colab/Kaggle)
   ingest_damp.py              DAMP-VSEP / DAMP-S-AG adapter: list (discovery) + damp-s-ag (stream tarball subset)
   gtzan_split.py              full GTZAN discovery (sf.info probe) + naive stratified + jongpillee fault-filtered splits
+  ingest_mtg_moodtheme.py     MTG-Jamendo moodtheme TSV → (path, mood_class, artist_id) manifest (v3)
   _build_m0_notebook.py       regenerates notebooks/m0_gtzan_eval.ipynb (source of truth)
 experiments/
   run_gtzan_eval.py           Colab-side engine: select/convert/separate/evaluate/aggregate (shelved blind path)
   run_m0p_align.py            M0' Tier 1 runner: synth_warp -> features -> DTW -> recovered beats -> score
   run_m0p_t2.py               M0' Tier 2 runner: build_reference (vocal+melody) -> DTW per rendition -> score
   run_m0p_t2_damp.py          M0' Tier 2 DAMP runner: backing -> beats/chroma; designated/consensus melody; chroma + pitch paths
-  train_style.py              GrooveStyleSelector v1: genre (GTZAN) + mood (stub) multi-head training; CPU
+  train_style.py              GrooveStyleSelector v1/v2: genre (GTZAN) + mood (stub) multi-head training; CPU
+  train_genre_tl.py           v3 genre TL: PANNs CNN14 embeddings (GTZAN fault split) -> MLP head; CPU
+  train_mood_tl.py            v3 mood TL: PANNs CNN14 embeddings (MTG-Jamendo or stub) -> MLP head; CPU
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator

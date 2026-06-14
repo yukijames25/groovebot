@@ -17,18 +17,23 @@ from groovebot.style.attributes import (
     estimate_tempo,
 )
 from groovebot.style.augment import random_time_crop, spec_augment
+from groovebot.style.backbone import EMBEDDING_DIM, PANNS_SR, PannsBackbone
 from groovebot.style.features import log_mel_spectrogram
-from groovebot.style.model import GENRES, MOODS, StyleCNN
+from groovebot.style.model import GENRES, MOODS, StyleCNN, StyleHead
 from groovebot.style.select import GrooveStyle, GrooveStyleSelector
 from groovebot.style.table import MOVES, select_move
 
 __all__ = [
+    "EMBEDDING_DIM",
     "GENRES",
     "GrooveStyle",
     "GrooveStyleSelector",
     "MOODS",
     "MOVES",
+    "PANNS_SR",
+    "PannsBackbone",
     "StyleCNN",
+    "StyleHead",
     "arousal_bucket",
     "estimate_arousal",
     "estimate_tempo",
