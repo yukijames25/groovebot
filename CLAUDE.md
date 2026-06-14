@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: GrooveStyleSelector v3（PANNs CNN14 凍結転移＋MTG-Jamendo mood ヘッド: genre fault test 0.431 → **0.817** (+38.6 pp)、訓練-検証 gap +22.2 pp → +2.6 pp、混同行列の pop sink 解消）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `8306655`（GrooveStyleSelector v3: PANNs CNN14 凍結転移＋MTG-Jamendo mood ヘッド配線 — genre fault test 0.431 → **0.817** (+38.6 pp)、訓練-検証 gap +22.2 pp → +2.6 pp、混同行列の pop sink 解消、mood は MTG ingest＋tag mapping＋synthetic stub training を実装）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
