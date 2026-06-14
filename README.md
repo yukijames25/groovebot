@@ -535,6 +535,152 @@ needed locally).
 `notebooks/m0_gtzan_eval.ipynb`. Structural and CLI-flag consistency are
 checked by `tests/test_notebook.py`.
 
+## GrooveStyleSelector — startup style picker (v1, parallel track)
+
+The alignment / beat work above decides **when** the robot moves. The
+`groovebot.style` package decides **how** it moves — what kind of nori
+(headbang vs sway vs penlight wave, big vs small) given the song's
+character. This is a deliberately separate vertical slice from the
+timing track: style decisions happen once at the startup window
+(≈5–10 s of audio at the song's start), so DAMP availability and online
+alignment progress do not block it.
+
+See spec `docs/SYSTEM_SPEC.md` §14 module note for the contract.
+
+### Design
+
+```
+audio (5-10 s startup window)
+   ├── features.log_mel_spectrogram ─► StyleCNN ─► (genre_probs, mood_probs)
+   ├── attributes.estimate_tempo    ─► tempo BPM
+   └── attributes.estimate_arousal  ─► arousal 0..1 ─► arousal_bucket
+                                                            │
+                              table.select_move(genre, arousal_bucket, mood_probs)
+                                                            │
+                                                            ▼
+                                                      GrooveStyle
+                                                  (move + intensity text)
+```
+
+- **features.py** — log-mel spectrogram (librosa, n_mels=64, hop=512,
+  resamples to 22050 Hz). Variable time dim; model handles via
+  adaptive average pool.
+- **model.py** — small 4-block CNN (channels 16→32→64→128, BN+ReLU+
+  MaxPool each), `AdaptiveAvgPool2d(1)`, then a `ModuleDict` of heads.
+  v1 ships `genre` (10-class, GTZAN vocab) and `mood` (6-class). Tempo
+  and arousal are computed by heuristic for now; both can be promoted
+  to learned heads later without changing the call sites in
+  `select.py`.
+- **attributes.py** — `estimate_tempo` (librosa.beat.beat_track) and
+  `estimate_arousal` (geometric mean of normalised RMS loudness and
+  onset density; the geometric form self-gates near-silent inputs
+  whose RMS is tiny but whose onset peak picker fires on noise).
+- **table.py** — Yuki's nori lookup: `(genre, arousal_bucket, mood) →
+  (move, intensity)`. Mood enters as a soft probability distribution,
+  not argmax: each mood contributes a preferred-move distribution
+  weighted by its probability, summed, then multiplied by the genre×
+  arousal bias. Argmax over the combined bias picks the move.
+- **select.py** — `GrooveStyleSelector.select(audio, sr)` returns a
+  `GrooveStyle` dataclass with `move`, `intensity`, `tempo_bpm`,
+  `arousal`, and the full softmax probability dicts.
+
+### Upper-body-feasible move vocabulary (10 DOF, no legs)
+
+`headbang`, `bob_nod`, `sway`, `rock`, `fist_pump`, `clap`,
+`penlight_wave`, `quiet_listen`. Move semantics are documented in
+`groovebot/style/table.py`. v1 outputs text labels only; mapping these
+to concrete `JointCommand` trajectories belongs to a later
+`GrooveGenerator` revision once we know the labels are stable.
+
+### Data
+
+- **Genre** (real): GTZAN, 10 classes. `data/raw/gtzan_mini/genres/
+  <genre>/<file>.wav` is enough to smoke-train the pipeline; the full
+  GTZAN (~1 k files) is required for any meaningful accuracy.
+- **Mood** (stub): no CC mood-tagged audio is wired up yet.
+  `experiments/train_style.py` uses a deterministic
+  genre → mood pseudo-map (`_STUB_MOOD`) so the multi-head training
+  loop runs end-to-end. The mood val accuracy this produces is
+  meaningless; it measures whether the network learned the
+  deterministic map.
+- **TODO**: replace `_STUB_MOOD` with a loader over the **MTG-Jamendo
+  mood subset** (~14 k CC clips, autotag mood labels). Spec §14 module
+  note also mentions FMA mood as an option.
+- **Hard rule**: no copyrighted J-pop audio or video on disk or in
+  commits. The whole style pipeline only ever ingests CC / research-
+  licensed material (data sits under `data/`, which is gitignored).
+
+### Run
+
+Install (one extra; everything else is already on the M0' profile):
+
+```bash
+pip install torch  # CPU is fine for v1; small CNN trains in minutes
+```
+
+Smoke-train on `gtzan_mini`:
+
+```bash
+python -m experiments.train_style \
+    --gtzan-root data/raw/gtzan_mini/genres \
+    --out-dir data/style_smoke \
+    --epochs 20 --batch-size 8
+```
+
+Outputs:
+- `data/style_smoke/style_cnn.pt` — checkpoint
+- `data/style_smoke/report.json` — train/val history, representative
+  `GrooveStyle` labels per genre, tempo estimates
+
+Inference from Python:
+
+```python
+import soundfile as sf
+from groovebot.style import GrooveStyleSelector
+
+selector = GrooveStyleSelector()                     # random weights
+# selector.model.load_state_dict(torch.load("data/style_smoke/style_cnn.pt")["state_dict"])
+audio, sr = sf.read("some_song.wav", dtype="float32", always_2d=False)
+style = selector.select(audio[: 10 * sr], sr)
+print(style.as_text())
+# -> "headbang@0.95 (metal/aggressive, 145BPM, arousal=0.81/high)"
+```
+
+### Validation
+
+`tests/test_style_*.py` cover (CPU-only, no real audio dataset):
+
+- `features.py` shape, dtype, resampling, multichannel-to-mono
+- `model.py` forward shapes per head, softmax sum, time-dim invariance
+- `table.py` per-mood/genre/arousal expected moves, soft weighting
+  (blend ≠ argmax), intensity in [0, 1], unknown-key handling
+- `select.py` end-to-end on synthetic click tracks: tempo close to
+  ground-truth BPM (with octave-error tolerance), arousal contrast
+  between dense and near-silent inputs, `GrooveStyle` contract.
+
+`pytest -q tests/test_style_*.py` — all green on CPU, no GPU required.
+
+### Limits (v1, honest)
+
+- **Mood head is not real.** Trained on a deterministic
+  genre → mood map. Until MTG-Jamendo (or equivalent) is wired in, the
+  mood softmax is just a one-hot regression on the genre prediction.
+- **gtzan_mini is 10 files/genre.** Accuracy bounded by data, not
+  model. Full GTZAN brings genre into the published-baseline range
+  (~70–80%); v1's smoke run on the mini set lands around 30–40%.
+- **Arousal heuristic is signal-level**, not perceptual. It cannot
+  distinguish "energetic mellow ballad" from "loud noise"; for that
+  we eventually want a learned head trained on AVEC-style arousal
+  labels.
+- **Tempo via `librosa.beat.beat_track`** is single-scalar and prone
+  to octave errors (classical clip at 234 BPM is the smoke run
+  catching this). The table keys on arousal bucket, not BPM, so this
+  rarely changes the move selection; but downstream code that reads
+  `style.tempo_bpm` should expect ±octave.
+- **No JointCommand bridge yet.** Outputs are text labels; the
+  `GrooveGenerator` still uses the M1 rule-based map. The two will
+  meet once labels are stable.
+
 ## Layout
 
 ```
@@ -552,6 +698,12 @@ groovebot/
     dtw_align.py              OfflineDTWAligner + map_reference_beats
     reference.py              ReferenceBundle + build_reference (Demucs lazy import) for Tier 2
     midi_ref.py               MidiReference + load_reference_from_midi (pretty_midi; DAMP-S-AG MIDI route)
+  style/                      GrooveStyleSelector v1 (startup style picker, parallel track)
+    features.py               log-mel spectrogram (5-10 s startup window)
+    model.py                  StyleCNN: small 4-block CNN + genre/mood multi-head
+    attributes.py             tempo (librosa.beat) + arousal (RMS × onset density)
+    table.py                  Yuki's nori table: (genre, arousal, mood probs) -> (move, intensity)
+    select.py                 GrooveStyleSelector — top-level wiring -> GrooveStyle text labels
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
@@ -563,6 +715,7 @@ experiments/
   run_m0p_align.py            M0' Tier 1 runner: synth_warp -> features -> DTW -> recovered beats -> score
   run_m0p_t2.py               M0' Tier 2 runner: build_reference (vocal+melody) -> DTW per rendition -> score
   run_m0p_t2_damp.py          M0' Tier 2 DAMP runner: backing -> beats/chroma; designated/consensus melody; chroma + pitch paths
+  train_style.py              GrooveStyleSelector v1: genre (GTZAN) + mood (stub) multi-head training; CPU
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator
