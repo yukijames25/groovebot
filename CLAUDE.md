@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: GrooveStyleSelector v2（genre ヘッド本物の数字: full GTZAN 1000曲、fault-filtered+artist-aware と naive stratified の両方を計装、リーク bias 可視化）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `e67a80c`（GrooveStyleSelector v2: genre ヘッド本物の数字 — full GTZAN 1000曲、fault-filtered+artist-aware と naive stratified の両方を計装、SpecAugment+random crop+dropout+early stopping、リーク bias 可視化）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
