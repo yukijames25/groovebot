@@ -33,8 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `316edce`（GrooveStyleSelector v3 mood ヘッド本物の数字 — MTG-Jamendo 6 archives 780 mood-kept clips、artist 非重複 split、test 0.350、calm が sink クラス、conflict rule は MTG corpus 全体で moot=multi-mood-tag 0 件）／ タグ: `m0`, `m1`, `m0-1`。
-※本セッション後に GrooveStyleSelector v3 arousal/valence 実数字をコミット予定（DEAM 1802 曲、arousal R²=0.522 r=0.723 / valence R²=0.451 r=0.675 / heuristic vs truth r=0.422）。
+最新コミット: `3539c05`（GrooveStyleSelector v3 arousal/valence 本物の数字 — DEAM 1802 曲、song-disjoint 1262/270/270、test arousal R²=0.522 r=0.723 / valence R²=0.451 r=0.675、heuristic vs truth r=0.422 で +34 pp R² ゲイン、learned arousal_fn を opt-in 配線）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
