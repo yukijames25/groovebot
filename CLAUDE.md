@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: GrooveStyleSelector v3 mood ヘッド本物の数字（MTG-Jamendo 6 archives 780 mood-kept clips、artist 非重複 split、test 0.350、calm が sink、conflict rule は MTG corpus 全体で moot）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `316edce`（GrooveStyleSelector v3 mood ヘッド本物の数字 — MTG-Jamendo 6 archives 780 mood-kept clips、artist 非重複 split、test 0.350、calm が sink クラス、conflict rule は MTG corpus 全体で moot=multi-mood-tag 0 件）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
