@@ -7,21 +7,12 @@ small CSV manifest the v3 mood trainer can read:
 
     path,mtg_track_id,artist_id,mood_class
 
-Use the **official** MTG download script (it is the only sanctioned way
-to fetch the audio; the dataset is CC but redistribution from us would
-be impolite):
-
-  git clone https://github.com/MTG/mtg-jamendo-dataset
-  cd mtg-jamendo-dataset
-  python scripts/download/download.py \\
-      --dataset autotagging_moodtheme \\
-      --type audio-low \\
-      --output-dir <YOUR>/data/raw/mtg_moodtheme \\
-      --from 00 --to 02     # bound to 3 archives -> ~3000 clips, ~1.8 GB
-
-The bounding flags `--from / --to` are the project-policy guardrails:
-we want a few thousand clips for the v3 head, not the full 18k-clip
-moodtheme subset. The trainer is happy with whatever subset lands.
+The dataset is CC but redistribution from us would be impolite — fetch
+it yourself. MTG's `download.py` has no archive-range flag, so for a
+bounded subset we curl individual tars by name (each ~517 MB, ~200
+moodtheme clips). README "v3 mood" section has the exact loop. Hard
+cap: stay well under the 52 GB full subset; 6 archives (~3.1 GB) is
+plenty for the v3 head.
 
 Output manifest schema is intentionally minimal so it stays stable when
 the MTG side changes (they revise the tag list / TSV columns
@@ -98,6 +89,22 @@ def parse_tsv(tsv_path: Path) -> list[tuple[str, str, str, list[str]]]:
     return rows
 
 
+def _resolve_audio_path(audio_root: Path, rel_path: str) -> Path | None:
+    """MTG audio-low ships as `<dir>/<n>.low.mp3`, but the TSV path is
+    `<dir>/<n>.mp3`. Try the audio-low form first, then fall back to
+    the bare TSV path (audio-full). Returns the first existing path,
+    or None if neither exists."""
+    candidates = []
+    if rel_path.endswith(".mp3"):
+        candidates.append(rel_path[:-4] + ".low.mp3")
+    candidates.append(rel_path)
+    for c in candidates:
+        p = audio_root / c
+        if p.exists():
+            return p
+    return None
+
+
 def build_manifest(
     audio_root: Path,
     tsv_path: Path,
@@ -111,19 +118,23 @@ def build_manifest(
     Reasons:
       - `no_mood_tag`     : every tag is a theme / ambiguous
       - `conflict`        : `drop_on_disagreement` and the moods disagreed
-      - `audio_missing`   : the .mp3 / .ogg is not in `audio_root`
+      - `audio_missing`   : neither the audio-low (`.low.mp3`) nor the
+                            audio-full (`.mp3`) variant exists
+
+    The manifest stores the *resolved* path so the trainer can read it
+    directly without re-applying the `.low.mp3` translation.
     """
     rows = parse_tsv(tsv_path)
     kept: list[MtgClip] = []
     reasons: dict[str, int] = {"no_mood_tag": 0, "conflict": 0, "audio_missing": 0}
     for track_id, artist_id, rel_path, tags in rows:
+        resolved_rel = rel_path
         if require_audio_present:
-            apath = audio_root / rel_path
-            if not apath.exists():
-                # MTG paths sometimes use leading directories like
-                # "01/01234.mp3" — accept that as-is.
+            apath = _resolve_audio_path(audio_root, rel_path)
+            if apath is None:
                 reasons["audio_missing"] += 1
                 continue
+            resolved_rel = str(apath.relative_to(audio_root)).replace("\\", "/")
         mood = resolve_clip_moods(tags, rule=conflict_rule)  # type: ignore[arg-type]
         if mood is None:
             mapped = [t for t in tags if t in _MAPPED_SET]
@@ -133,7 +144,7 @@ def build_manifest(
                 reasons["conflict"] += 1
             continue
         kept.append(MtgClip(
-            track_id=track_id, artist_id=artist_id, rel_path=rel_path,
+            track_id=track_id, artist_id=artist_id, rel_path=resolved_rel,
             tags=tags, mood_class=mood,
         ))
     return kept, reasons

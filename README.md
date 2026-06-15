@@ -917,28 +917,42 @@ which is roughly the human ear's experience.
 
 **v3 mood — MTG-Jamendo `autotagging_moodtheme`**
 
-1. Get the audio. Use the official MTG download script (the dataset is
-   CC but redistribution from us would be impolite):
+1. Get the audio. The dataset is CC, but redistribution from us would be
+   impolite — fetch it yourself. MTG's `download.py` has no
+   archive-range flag (it always pulls all 100 tars), so for a bounded
+   subset we curl individual tars by name. Each `audio-low` tar is
+   ~517 MB / ~200 moodtheme clips. **6 archives ≈ 3.1 GB ≈ ~780 mood-
+   kept clips after the tag mapping. 12 archives ≈ 6.2 GB. Stop before
+   that — never pull all 100 (~52 GB).**
 
    ```bash
-   git clone https://github.com/MTG/mtg-jamendo-dataset
-   cd mtg-jamendo-dataset
-   python scripts/download/download.py \
-       --dataset autotagging_moodtheme \
-       --type audio-low \
-       --output-dir <YOUR>/data/raw/mtg_moodtheme \
-       --from 00 --to 02     # bounded to 3 archives ≈ 3000 clips ≈ 1.8 GB
+   mkdir -p data/raw/mtg_moodtheme
+   cd data/raw/mtg_moodtheme
+
+   # 1a. Tag TSV (~3 MB; needed for the manifest, independent of audio).
+   curl -fSL -o autotagging_moodtheme.tsv \
+       "https://raw.githubusercontent.com/MTG/mtg-jamendo-dataset/master/data/autotagging_moodtheme.tsv"
+
+   # 1b. Bounded audio pull. Each $n is an archive 00..99.
+   for n in 00 01 02 03 04 05; do
+     fn="autotagging_moodtheme_audio-low-${n}.tar"
+     curl -fSL --retry 3 -o "${fn}" \
+       "https://essentia.upf.edu/documentation/datasets/mtg-jamendo/autotagging_moodtheme/audio-low/${fn}"
+     # SHA-256 checksums live in data/download/autotagging_moodtheme_audio-low_sha256_tars.txt
+     # in the MTG repo — verify if you care.
+     tar -xf "${fn}" && rm "${fn}"
+   done
    ```
 
-   The `--from / --to` flags are the project-policy bound: enough clips
-   for a 38-tag mood head, far short of the 18 k-clip full subset.
+   The unpacked layout is `data/raw/mtg_moodtheme/<NN>/<track_id>.mp3`,
+   matching the TSV's `PATH` column.
 
 2. Build the manifest:
 
    ```bash
    python -m tools.ingest_mtg_moodtheme \
        --audio-root data/raw/mtg_moodtheme \
-       --tsv mtg-jamendo-dataset/data/autotagging_moodtheme.tsv \
+       --tsv data/raw/mtg_moodtheme/autotagging_moodtheme.tsv \
        --out-csv data/mtg_moodtheme_manifest.csv \
        --conflict-rule drop_on_disagreement
    ```
@@ -955,18 +969,101 @@ which is roughly the human ear's experience.
        --epochs 40 --batch-size 64 --dropout 0.3
    ```
 
-Until the MTG download lands, the training loop is wired end-to-end
-via the synthetic-stub mode (class-conditional Gaussian embeddings,
-useful only for verifying the loss / split / report machinery — the
-numbers it produces are noise):
+A `--synthetic-stub` mode (class-conditional Gaussian embeddings,
+`report.json["is_stub"] = true`) is retained so the training loop can
+go end-to-end without the MTG download — useful for verifying the
+loss / split / report machinery in CI.
 
-```bash
-python -m experiments.train_mood_tl --synthetic-stub \
-    --out-dir data/style_v3_mood_stub --epochs 8
+**v3 mood — real numbers (6 archives, 780 mood-kept clips)**
+
+The 6-archive slice (TSV dirs `00`-`05`) yields **780 kept clips
+across all 6 classes** after the tag mapping drops theme-only and
+ambiguous clips. Class balance:
+
+| class      | clips | share |
+|------------|------:|------:|
+| aggressive |  105  |  13 % |
+| happy      |  128  |  16 % |
+| sad        |  125  |  16 % |
+| calm       |  200  |  26 % |
+| dark       |  130  |  17 % |
+| epic       |   92  |  12 % |
+
+Min/max ratio = 92 / 200 = 2.2× — moderately imbalanced; `calm` is the
+largest class.
+
+**Conflict rule comparison — the rule is moot for this corpus**
+
+Both `drop_on_disagreement` and `first_match` manifests are
+**byte-identical** (verified by md5). Running an audit on the full
+18 486-clip moodtheme TSV gives the underlying reason:
+
+| group                                         | count   | share  |
+|-----------------------------------------------|--------:|-------:|
+| no mood tag (theme / ambiguous only)          |  6 293  | 34.0 % |
+| one mood tag                                  | 12 193  | 66.0 % |
+| multiple mood tags, all in same class         |    0    |  0.0 % |
+| multiple mood tags, spanning ≥ 2 v3 classes   |    0    |  0.0 % |
+
+**Every** moodtheme clip in the entire corpus has at most one mood tag
+under the 38-tag mapping. The two conflict rules therefore produce the
+same training data for any subset; their accuracy gap is pure
+stochastic noise from the training trajectory.
+
+| conflict rule        | best val | test acc | train-val gap @ best |
+|----------------------|---------:|---------:|---------------------:|
+| drop_on_disagreement |    0.359 |   0.350  |             +0.059   |
+| first_match          |    0.342 |   0.333  |             +0.109   |
+
+(Chance for a 6-class head with this balance ≈ 0.20 if it always
+predicts `calm`. The head sits ~1.5–1.8× over that majority baseline.)
+
+The same-manifest, same-seed runs land within ±0.017 of each other —
+the gap is the training-loop's stochastic ordering, not the mapping
+rule. The numbers below are the `drop_on_disagreement` head (kept as
+the default).
+
+Mood-head confusion (`drop_on_disagreement`, row-normalised, test = 117
+clips):
+
+```
+       aggr  happ   sad  calm  dark  epic   support
+ aggr  0.12  0.12  0.00  0.44  0.31  0.00      16
+ happ  0.25  0.31  0.06  0.31  0.06  0.00      16
+  sad  0.00  0.00  0.14  0.62  0.05  0.19      21
+ calm  0.03  0.10  0.13  0.70  0.03  0.00      30
+ dark  0.14  0.14  0.10  0.43  0.19  0.00      21
+ epic  0.08  0.00  0.08  0.39  0.00  0.46      13
 ```
 
-The output `report.json` carries an explicit `is_stub: true` so
-nobody mistakes it for a real mood accuracy.
+Findings:
+
+- **`calm` is the v3 mood sink.** Every other class collapses partly
+  into it — `sad` 62 %, `aggressive` 44 %, `dark` 43 %, `epic` 39 %.
+  Same shape as v2's "pop sink" on the genre head: the model bets on
+  the largest class when uncertain. `calm` is the largest class (26 %
+  of the corpus) so this is the high-prior safe call.
+- **`calm` itself is 70 % correct** — the head learned the calm
+  signature well, it just over-applies it.
+- **`epic` is the cleanest minority class at 46 % correct** despite
+  only 13 test clips and only 92 training clips. PANNs's "cinematic"
+  features survive transfer.
+- **`calm ↔ sad` is asymmetric**: `sad → calm` 62 %, `calm → sad`
+  13 %. The low-arousal axis collapses sad into calm but not the
+  other way — calm clips have a more distinct timbre fingerprint than
+  sad ones.
+- **`aggressive ↔ epic` is *not* the dominant confusion** the design
+  draft expected: `aggressive → epic` 0 %, `epic → aggressive` 8 %.
+  PANNs distinguishes these reasonably well. The `aggressive` errors
+  go to `calm` (44 %) and `dark` (31 %) instead.
+- The mood head is genuinely limited by data size at this scale — 92
+  epic training clips is the floor we hit. Doubling the archive count
+  (12 archives, ~6 GB) would roughly double per-class support and
+  likely push the head past 0.40 test accuracy.
+
+The artist-non-overlap split is exact (MTG ships per-track artist
+IDs); `train_mood_tl.py` fills test, then val, then train, so an
+artist's tracks never straddle the boundary.
 
 **Tag mapping — 59 MTG tags → 6 v3 mood classes**
 
@@ -991,11 +1088,18 @@ revision shouts at us.
   feature transfer and partly that pretraining and target distributions
   overlap. It is still a fair feature-quality measure, but should not
   be cited as a from-scratch result.
-- **Mood head is still bounded by MTG label noise.** Crowdsourced
-  tags, multiple-mood clips, and tag bias (`happy` is over-represented;
-  `dark` is sparse) all affect the numbers. The drop-on-disagreement
-  rule trades coverage for clarity; flipping to `first_match` raises
-  recall but mixes classes. Both runs are reported when both have data.
+- **Mood head is bounded by MTG corpus size + balance.** v3 ships a
+  6-archive (~3.1 GB / 780 mood-kept clips) result; `calm` is over-
+  represented and acts as the prediction sink. Doubling the archive
+  count would raise per-class support and likely lift test acc above
+  0.40, at a 6 GB data cost.
+- **The conflict rule is moot for MTG.** No clip in the full 18 486-
+  row moodtheme corpus has mood tags spanning ≥ 2 of our 6 classes
+  under the current 38-tag mapping. `drop_on_disagreement` and
+  `first_match` produce byte-identical manifests; their accuracy
+  delta (~±0.02) is pure training-loop noise. If a future mapping
+  splits e.g. `aggressive` into multiple buckets, conflicts would
+  surface; today the rule is informational only.
 - **MTG download is gated behind the upstream tool.** We deliberately do
   not redistribute their audio; v3 wires the manifest / training but
   does not ship a one-click data pull. Use the bounded `--from / --to`

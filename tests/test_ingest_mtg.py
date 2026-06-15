@@ -8,6 +8,7 @@ import pytest
 import soundfile as sf
 
 from tools.ingest_mtg_moodtheme import (
+    _resolve_audio_path,
     _strip_tag_prefix,
     build_manifest,
     parse_tsv,
@@ -90,6 +91,44 @@ def test_build_manifest_theme_only_drops(tmp_path):
     kept, reasons = build_manifest(audio_root, tsv)
     assert kept == []
     assert reasons["no_mood_tag"] == 1
+
+
+def test_resolve_audio_path_prefers_audio_low(tmp_path):
+    audio_root = tmp_path / "audio"
+    _write_audio(audio_root / "00" / "7400.low.mp3")
+    resolved = _resolve_audio_path(audio_root, "00/7400.mp3")
+    assert resolved is not None
+    assert resolved.name == "7400.low.mp3"
+
+
+def test_resolve_audio_path_falls_back_to_audio_full(tmp_path):
+    audio_root = tmp_path / "audio"
+    _write_audio(audio_root / "00" / "7400.mp3")
+    resolved = _resolve_audio_path(audio_root, "00/7400.mp3")
+    assert resolved is not None
+    assert resolved.name == "7400.mp3"
+
+
+def test_resolve_audio_path_missing(tmp_path):
+    audio_root = tmp_path / "audio"
+    audio_root.mkdir()
+    assert _resolve_audio_path(audio_root, "00/7400.mp3") is None
+
+
+def test_build_manifest_uses_audio_low_when_present(tmp_path):
+    audio_root = tmp_path / "audio"
+    _write_audio(audio_root / "01" / "0001.low.mp3")    # audio-low form
+    tsv = tmp_path / "tags.tsv"
+    tsv.write_text(
+        "TRACK_ID\tARTIST_ID\tALBUM_ID\tPATH\tDURATION\tTAGS\n"
+        "1\tA\tX\t01/0001.mp3\t30.0\tmood/theme---happy\n",
+        encoding="utf-8",
+    )
+    kept, reasons = build_manifest(audio_root, tsv)
+    assert reasons["audio_missing"] == 0
+    assert len(kept) == 1
+    # Manifest now stores the resolved (.low.mp3) path
+    assert kept[0].rel_path.endswith("0001.low.mp3")
 
 
 def test_write_manifest_roundtrip(tmp_path):
