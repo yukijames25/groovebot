@@ -158,3 +158,66 @@ class StyleHead(nn.Module):
         self.eval()
         logits = self.forward(emb)
         return {name: F.softmax(logit, dim=-1) for name, logit in logits.items()}
+
+
+# v3 arousal/valence regression: same frozen PANNs embedding, separate
+# head class so `StyleHead` stays softmax-only (predict_probs would be
+# nonsense for a continuous target). Two outputs because valence comes
+# for free from DEAM and the v2 attribute heuristic only covers arousal.
+REGRESSION_TARGETS = ("arousal", "valence")
+
+
+class StyleRegressionHead(nn.Module):
+    """Frozen-embedding MLP that regresses to (arousal, valence).
+
+    Architecture mirrors `StyleHead`: shared `Linear(emb_dim, hidden)
+    -> ReLU -> Dropout`, then a `Linear(hidden, 1)` per target. Per-
+    target heads (not one Linear(.., 2)) keep the door open to wiring
+    only the arousal head into the selector while valence is still
+    informational, and match the ModuleDict pattern used elsewhere.
+
+    Forward output: dict[target] -> (B,) tensor in DEAM SAM units
+    (1..9 at training time; the calibrator in `deam.sam_to_unit` maps
+    to the 0..1 selector scale).
+    """
+
+    def __init__(
+        self,
+        emb_dim: int = PANNS_EMBEDDING_DIM,
+        targets: tuple[str, ...] = REGRESSION_TARGETS,
+        hidden: int = 256,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.emb_dim = int(emb_dim)
+        self.targets = tuple(targets)
+        self.dropout = float(dropout)
+        self.shared = nn.Sequential(
+            nn.Linear(self.emb_dim, hidden),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=self.dropout),
+        )
+        self.heads = nn.ModuleDict({
+            name: nn.Linear(hidden, 1) for name in self.targets
+        })
+
+    def forward(self, emb: torch.Tensor) -> dict[str, torch.Tensor]:
+        if emb.dim() == 1:
+            emb = emb.unsqueeze(0)
+        if emb.dim() != 2:
+            raise ValueError(
+                f"expected (emb_dim,) or (B, emb_dim), got shape {tuple(emb.shape)}"
+            )
+        if emb.shape[-1] != self.emb_dim:
+            raise ValueError(
+                f"emb last dim {emb.shape[-1]} != head emb_dim {self.emb_dim}"
+            )
+        h = self.shared(emb)
+        return {name: head(h).squeeze(-1) for name, head in self.heads.items()}
+
+    @torch.no_grad()
+    def predict(self, emb: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Inference convenience. Same call as `forward` but always in
+        eval mode (drops dropout)."""
+        self.eval()
+        return self.forward(emb)

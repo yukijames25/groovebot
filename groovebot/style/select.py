@@ -24,6 +24,7 @@ between v1, v2, v3. Pick a constructor:
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -34,13 +35,23 @@ from groovebot.style.attributes import (
     estimate_tempo,
 )
 from groovebot.style.backbone import EMBEDDING_DIM, PANNS_SR, PannsBackbone
+from groovebot.style.deam import sam_to_unit
 from groovebot.style.features import (
     DEFAULT_N_MELS,
     DEFAULT_SR,
     log_mel_spectrogram,
 )
-from groovebot.style.model import GENRES, MOODS, StyleCNN, StyleHead
+from groovebot.style.model import (
+    GENRES, MOODS, StyleCNN, StyleHead, StyleRegressionHead,
+)
 from groovebot.style.table import select_move
+
+
+# An arousal source is `(audio, sr) -> 0..1`. The heuristic
+# `estimate_arousal` already matches; the v3 learned head needs a
+# small adapter (`make_panns_arousal_fn`) to compose backbone + head
+# + DEAM calibrator into the same shape.
+ArousalFn = Callable[[np.ndarray, int], float]
 
 
 @dataclass
@@ -74,13 +85,18 @@ class GrooveStyleSelector:
         *,
         backbone: PannsBackbone | None = None,
         head: StyleHead | None = None,
+        arousal_fn: ArousalFn | None = None,
         target_sr: int = DEFAULT_SR,
         n_mels: int = DEFAULT_N_MELS,
         device: str | torch.device | None = None,
     ):
+        """`arousal_fn` overrides the v2 `estimate_arousal` heuristic
+        with any `(audio, sr) -> 0..1` callable. Build the v3 DEAM-
+        learned one with `make_panns_arousal_fn(backbone, head)`."""
         self.target_sr = int(target_sr)
         self.n_mels = int(n_mels)
         self.device = torch.device(device) if device is not None else torch.device("cpu")
+        self.arousal_fn: ArousalFn = arousal_fn or estimate_arousal
 
         if backbone is not None or head is not None:
             if backbone is None or head is None:
@@ -165,7 +181,8 @@ class GrooveStyleSelector:
         mood_argmax = max(mood_probs, key=mood_probs.get)
 
         tempo_bpm = estimate_tempo(audio, sr)
-        arousal_val = estimate_arousal(audio, sr)
+        arousal_val = float(self.arousal_fn(audio, sr))
+        arousal_val = max(0.0, min(1.0, arousal_val))
         bucket = arousal_bucket(arousal_val)
 
         move, intensity = select_move(genre, bucket, mood_probs)
@@ -180,3 +197,33 @@ class GrooveStyleSelector:
             arousal=arousal_val,
             arousal_bucket=bucket,
         )
+
+
+def make_panns_arousal_fn(
+    backbone: PannsBackbone,
+    head: StyleRegressionHead,
+    *,
+    target: str = "arousal",
+    calibrator: Callable[[float], float] = sam_to_unit,
+    device: str | torch.device | None = None,
+) -> ArousalFn:
+    """Build an `(audio, sr) -> 0..1` callable that runs
+    `backbone -> head -> calibrator`.
+
+    `target` picks which output of the regression head to use (the
+    head ships both `arousal` and `valence`). `calibrator` maps the
+    head's raw output to 0..1 — defaults to `sam_to_unit` which is the
+    DEAM 1..9 SAM linear normaliser.
+    """
+    dev = torch.device(device) if device is not None else torch.device("cpu")
+    head = head.to(dev)
+    head.eval()
+
+    def _fn(audio: np.ndarray, sr: int) -> float:
+        emb = backbone.embed(audio, sr)
+        x = torch.from_numpy(emb).unsqueeze(0).to(dev)
+        with torch.no_grad():
+            pred = head(x)[target]
+        return float(calibrator(float(pred.item())))
+
+    return _fn

@@ -1108,6 +1108,99 @@ revision shouts at us.
   labels via the same `GrooveStyle` dataclass; the path to actual
   joint trajectories (M3 generator) is the next milestone.
 
+**v3 arousal/valence — DEAM static annotations**
+
+1. Get the audio + annotations. Direct curl from the canonical mirror —
+   no Kaggle auth needed. **1.25 GB audio + 4.5 MB annotations.**
+
+   ```bash
+   mkdir -p data/raw/deam
+   cd data/raw/deam
+   curl -fSL --retry 3 -o DEAM_audio.zip \
+       'https://cvml.unige.ch/databases/DEAM/DEAM_audio.zip'
+   curl -fSL --retry 3 -o DEAM_Annotations.zip \
+       'https://cvml.unige.ch/databases/DEAM/DEAM_Annotations.zip'
+   python -c "import zipfile; zipfile.ZipFile('DEAM_audio.zip').extractall('.'); zipfile.ZipFile('DEAM_Annotations.zip').extractall('.')"
+   ```
+
+   Layout: `data/raw/deam/MEMD_audio/<song_id>.mp3` (1802 files) +
+   `data/raw/deam/annotations/annotations averaged per song/song_level/static_annotations_averaged_songs_*.csv`.
+   License: CC BY-NC; `data/` is in .gitignore so nothing is re-distributed.
+
+2. Train the regression head (frozen PANNs + 2 x linear). Embedding
+   precompute is ~12 min on CPU, head training is instantaneous.
+
+   ```bash
+   python -m experiments.train_arousal_tl \
+       --static-csv 'data/raw/deam/annotations/annotations averaged per song/song_level/static_annotations_averaged_songs_1_2000.csv' \
+       --static-csv 'data/raw/deam/annotations/annotations averaged per song/song_level/static_annotations_averaged_songs_2000_2058.csv' \
+       --audio-root data/raw/deam \
+       --panns-ckpt 'data/raw/Cnn14_mAP=0.431.pth' \
+       --cache-dir data/style_emb_deam \
+       --out-dir data/style_v3_arousal \
+       --epochs 50 --batch-size 64 --early-stopping-patience 15
+   ```
+
+**v3 arousal — real numbers (DEAM 1802 songs, song-disjoint 1262/270/270)**
+
+| target  | val R²  | val RMSE | val r  | test R² | test RMSE | test r | literature |
+|---------|--------:|---------:|-------:|--------:|----------:|-------:|-----------:|
+| arousal |  0.549  |   0.901  |  0.742 |  0.522  |    0.886  |  0.723 | R²≈0.6     |
+| valence |  0.398  |   0.898  |  0.653 |  0.451  |    0.875  |  0.675 | R²≈0.4     |
+
+RMSE is on the DEAM SAM 1..9 scale. Early stopped at epoch 26 (patience 15).
+
+**Heuristic vs learned — does the v2 heuristic hold up?**
+
+The v2 `estimate_arousal()` (RMS x onset density, 0..1) was untested
+against ground truth. The trainer measures both on the same 270 test
+clips and reports the Pearson correlation:
+
+| arousal source | Pearson r vs DEAM truth | explained variance |
+|----------------|------------------------:|-------------------:|
+| heuristic (v2) |                  0.422  |             ~18 %  |
+| learned (v3)   |                  0.723  |             ~52 %  |
+
+Verdict: the heuristic is directionally right but weak (it over-
+estimates the corpus mean by +0.16 on the unit scale). The learned
+head wins by +0.30 r / +34 pp explained variance. We keep the
+heuristic as the default for the no-PANNs fast path and add
+`make_panns_arousal_fn(backbone, head)` for the v3 wiring:
+
+```python
+from groovebot.style.backbone import PannsBackbone
+from groovebot.style.model import StyleRegressionHead
+from groovebot.style.select import GrooveStyleSelector, make_panns_arousal_fn
+import torch
+
+backbone = PannsBackbone('data/raw/Cnn14_mAP=0.431.pth')
+head = StyleRegressionHead()
+ck = torch.load('data/style_v3_arousal/style_head_arousal.pt', map_location='cpu')
+head.load_state_dict(ck['state_dict'])
+arousal_fn = make_panns_arousal_fn(backbone, head)  # 0..1, DEAM-calibrated
+selector = GrooveStyleSelector(arousal_fn=arousal_fn, ...)
+```
+
+`GrooveStyle` public output is unchanged.
+
+### Limits (v3 arousal/valence)
+
+- **Frozen-backbone ceiling.** R² = 0.52 (arousal) / 0.45 (valence)
+  is the floor for "frozen PANNs + small MLP." Fine-tuning the
+  backbone or moving to a Music Tagging Transformer would close the
+  -0.08 gap to literature on arousal, but is out of scope here.
+- **DEAM static only.** Song-level (one label per song) — dynamic
+  (per-second) annotations are not used. The M2 online arousal
+  estimator will need a different head (the dynamic CSVs are in the
+  same archive).
+- **Calibration is linear.** `sam_to_unit(v, 1, 9) = (v - 1) / 8`.
+  The truth mean (4.76 SAM ≈ 0.47 unit) sits in the "mid" bucket
+  of `arousal_bucket()`; the heuristic shifts it +0.16 too high.
+- **AudioSet -> DEAM transfer.** PANNs CNN14 was pretrained on
+  AudioSet; the overlap with DEAM is smaller than with MTG/GTZAN
+  but not zero. Read the R² as a frozen-embedding feature-quality
+  measure, not a from-scratch result.
+
 ## Layout
 
 ```
@@ -1127,13 +1220,14 @@ groovebot/
     midi_ref.py               MidiReference + load_reference_from_midi (pretty_midi; DAMP-S-AG MIDI route)
   style/                      GrooveStyleSelector (startup style picker, parallel track)
     features.py               log-mel spectrogram (5-10 s startup window; v1/v2 path)
-    model.py                  StyleCNN (v1/v2) + StyleHead (v3 MLP on PANNs embedding)
+    model.py                  StyleCNN (v1/v2) + StyleHead + StyleRegressionHead (v3 arousal/valence)
     augment.py                random_time_crop + SpecAugment (train-only)
     backbone.py               PannsBackbone — frozen PANNs CNN14 + .npy cache (v3 transfer)
     mood_mapping.py           MTG-Jamendo 59 moodtheme tags → 6 v3 mood classes
-    attributes.py             tempo (librosa.beat) + arousal (RMS × onset density)
+    deam.py                   DEAM static-annotation loader + SAM<->unit calibrator (v3 arousal)
+    attributes.py             tempo (librosa.beat) + arousal heuristic (RMS × onset density)
     table.py                  Yuki's nori table: (genre, arousal, mood probs) -> (move, intensity)
-    select.py                 GrooveStyleSelector — v1/v2 CNN or v3 backbone+head -> GrooveStyle
+    select.py                 GrooveStyleSelector — pluggable arousal_fn + make_panns_arousal_fn
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
@@ -1150,6 +1244,7 @@ experiments/
   train_style.py              GrooveStyleSelector v1/v2: genre (GTZAN) + mood (stub) multi-head training; CPU
   train_genre_tl.py           v3 genre TL: PANNs CNN14 embeddings (GTZAN fault split) -> MLP head; CPU
   train_mood_tl.py            v3 mood TL: PANNs CNN14 embeddings (MTG-Jamendo or stub) -> MLP head; CPU
+  train_arousal_tl.py         v3 arousal/valence TL: PANNs CNN14 embeddings (DEAM or stub) -> regression head + heuristic vs truth cross-check; CPU
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator
