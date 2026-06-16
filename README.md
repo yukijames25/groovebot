@@ -1163,25 +1163,151 @@ clips and reports the Pearson correlation:
 
 Verdict: the heuristic is directionally right but weak (it over-
 estimates the corpus mean by +0.16 on the unit scale). The learned
-head wins by +0.30 r / +34 pp explained variance. We keep the
-heuristic as the default for the no-PANNs fast path and add
-`make_panns_arousal_fn(backbone, head)` for the v3 wiring:
+head wins by +0.30 r / +34 pp explained variance. **In v3.1 the
+learned head becomes the default whenever a `regression_head` is
+wired in**; the heuristic is the fallback for the no-PANNs / lean-
+runtime path.
 
 ```python
+# v3.1 recommended wiring — DEAM-learned arousal AND valence by default
 from groovebot.style.backbone import PannsBackbone
-from groovebot.style.model import StyleRegressionHead
-from groovebot.style.select import GrooveStyleSelector, make_panns_arousal_fn
+from groovebot.style.model import StyleHead, StyleRegressionHead
+from groovebot.style.select import GrooveStyleSelector
 import torch
 
 backbone = PannsBackbone('data/raw/Cnn14_mAP=0.431.pth')
-head = StyleRegressionHead()
-ck = torch.load('data/style_v3_arousal/style_head_arousal.pt', map_location='cpu')
-head.load_state_dict(ck['state_dict'])
-arousal_fn = make_panns_arousal_fn(backbone, head)  # 0..1, DEAM-calibrated
-selector = GrooveStyleSelector(arousal_fn=arousal_fn, ...)
+head = StyleHead()
+head.load_state_dict(torch.load(
+    'data/style_v3_mood/style_head_mood.pt', map_location='cpu')['state_dict'])
+reg_head = StyleRegressionHead()
+reg_head.load_state_dict(torch.load(
+    'data/style_v3_arousal/style_head_arousal.pt', map_location='cpu')['state_dict'])
+# regression_head shares the backbone embed with the classification head
+# (1 embed per select() call), and auto-becomes the default arousal +
+# valence source. The heuristic stays available as a fallback by
+# passing arousal_fn=estimate_arousal explicitly.
+selector = GrooveStyleSelector(
+    backbone=backbone, head=head, regression_head=reg_head,
+)
 ```
 
-`GrooveStyle` public output is unchanged.
+`GrooveStyle` public output is unchanged. `make_panns_arousal_fn` is
+still available for users who want to build the arousal fn alone (e.g.
+to pass into a non-v3 selector).
+
+### v3.1 — affect integration (DEAM) and V/A → mood
+
+v3 trained DEAM arousal **and** valence side by side. v3.1 wires both
+into the selector by default and adds a V/A → mood path that can
+replace (or be compared against) the MTG-trained mood head.
+
+**Default source policy (`select.py`)**
+
+| selector construction                                       | arousal source       | valence source       |
+|-------------------------------------------------------------|----------------------|----------------------|
+| `GrooveStyleSelector()`                                     | heuristic (fallback) | — (None)             |
+| `GrooveStyleSelector(backbone=, head=)`                     | heuristic (fallback) | — (None)             |
+| `GrooveStyleSelector(backbone=, head=, regression_head=)`   | **DEAM-learned**     | **DEAM-learned**     |
+| `... arousal_fn=...` / `... valence_fn=...`                 | explicit override    | explicit override    |
+
+The backbone embed is **shared** between the classification head and
+the regression head — one embed per `select()` call, not two. A test
+in `tests/test_select_affect_default.py` pins this so a future refactor
+cannot regress it for the M2 realtime loop.
+
+**V/A → mood (`groovebot/style/mood_from_va.py`)**
+
+```python
+from groovebot.style.mood_from_va import (
+    DEFAULT_QUADRANT_PROTOTYPES, PROTOTYPES_WITH_AUX, mood_probs_from_va,
+)
+mood_probs_from_va(arousal=0.95, valence=0.95)
+# -> {'happy': 0.69, 'aggressive': 0.12, 'sad': 0.07, 'calm': 0.12,
+#     'epic': 0.0, 'dark': 0.0}
+```
+
+Circumplex affect (Russell 1980): the four 0..1 V/A corners pin
+cleanly to four of our six mood classes:
+
+| valence | arousal | quadrant mood |
+|--------:|--------:|:--------------|
+|     1.0 |     1.0 | happy         |
+|     0.0 |     1.0 | aggressive    |
+|     1.0 |     0.0 | calm          |
+|     0.0 |     0.0 | sad           |
+
+**`epic` and `dark` are NOT pure V/A coordinates.** epic is high
+arousal + ambiguous valence (triumphant vs ominous-grand); dark is
+low-mid arousal + low valence and overlaps with sad. The MTG v3 head
+confirmed this — epic almost never confuses with aggressive (0%) and
+the discriminating axis is "grand/cinematic," orthogonal to V/A.
+
+The default `DEFAULT_QUADRANT_PROTOTYPES` therefore only populates the
+four quadrant moods; epic/dark get probability 0. To opt them in,
+pass `PROTOTYPES_WITH_AUX` (or your own draft) as `mood_va_prototypes`
+to the selector. The draft coordinates sit at `epic=(V=0.55, A=0.95,
+w=0.5)` and `dark=(V=0.10, A=0.30, w=0.5)` — the underweighting
+keeps them from stealing mass from the cleaner corners. These are
+drafts; the intended workflow is for the user to tune them against
+listening tests.
+
+Membership is **soft** (Gaussian on squared distance, sigma=0.45),
+not argmax. A query at the (0.5, 0.5) center spreads roughly
+uniformly over the four quadrants. The output sums to 1.0 and feeds
+straight into `table.select_move`, which already consumes mood as a
+soft distribution.
+
+**Mood source switch (`mood_source`)**
+
+```python
+GrooveStyleSelector(
+    backbone=backbone, head=head, regression_head=reg_head,
+    mood_source="va",                        # default is "head"
+    mood_va_prototypes=PROTOTYPES_WITH_AUX,  # opt in to epic/dark
+)
+```
+
+When `mood_source="va"`, mood comes from the V/A map instead of the
+MTG-trained head softmax. The MTG head is still in memory and the
+backbone embed still feeds it (for `genre_probs`), so switching is
+free — useful for running both paths in parallel and comparing.
+
+**DEAM V/A-mood vs MTG mood head — comparison report**
+
+`experiments/compare_va_mood_vs_mtg.py` runs both pipelines on the
+same clip set, dumps per-clip predictions to CSV, and writes a
+`report.json` with:
+
+- `agreement_rate` — % of clips where MTG-head and V/A argmax agree
+- `confusion_matrix_mtg_rows_va_cols` — full 6×6 matrix
+- `per_class_profile_by_mtg_mood` — for every MTG-head class, the
+  mean and std of (arousal, valence) the DEAM head predicts on those
+  same clips. **This is the MTG-retirement diagnostic**: if the MTG
+  head's `calm` clips cluster in the V/A calm quadrant, V/A reproduces
+  MTG; if they spread, MTG `calm` is leaking other classes.
+- `calm_sad_stability` — restricted to the `{calm, sad}^2` subset
+  where the v3 mood report flagged a 62% sad→calm collapse for MTG
+- `accuracy_vs_gt` — both pipelines vs the manifest's `mood_class`
+  column when present
+
+Use `--include-aux-moods` to enable epic/dark in the V/A path;
+default is the clean 4 quadrants so the comparison isolates the
+quadrant story.
+
+**MTG mood retirement criteria** (when the comparison report
+justifies dropping the MTG mood head):
+1. V/A `accuracy_vs_gt` ≥ MTG `accuracy_vs_gt` on the held-out
+   MTG mood set (the cleaner 4-quadrant story matches or beats the
+   trained head).
+2. `calm_sad_stability.agreement_rate` ≥ 0.8 on a manually-labelled
+   subset (V/A path stops the sad→calm collapse that MTG suffers).
+3. Listening-test approval that the V/A path produces musically
+   sensible mood assignments on at least one representative clip per
+   genre.
+
+If 1+2 hold and 3 passes, the next revision can drop the mood head
+from the v3 training pipeline (the regression head + V/A map
+replaces it) and shrink the `style/` module surface accordingly.
 
 ### Limits (v3 arousal/valence)
 
@@ -1225,9 +1351,10 @@ groovebot/
     backbone.py               PannsBackbone — frozen PANNs CNN14 + .npy cache (v3 transfer)
     mood_mapping.py           MTG-Jamendo 59 moodtheme tags → 6 v3 mood classes
     deam.py                   DEAM static-annotation loader + SAM<->unit calibrator (v3 arousal)
+    mood_from_va.py           circumplex V/A → mood probability map (v3.1 affect integration)
     attributes.py             tempo (librosa.beat) + arousal heuristic (RMS × onset density)
     table.py                  Yuki's nori table: (genre, arousal, mood probs) -> (move, intensity)
-    select.py                 GrooveStyleSelector — pluggable arousal_fn + make_panns_arousal_fn
+    select.py                 GrooveStyleSelector — DEAM-learned default + mood_source switch + heuristic fallback
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
@@ -1245,6 +1372,7 @@ experiments/
   train_genre_tl.py           v3 genre TL: PANNs CNN14 embeddings (GTZAN fault split) -> MLP head; CPU
   train_mood_tl.py            v3 mood TL: PANNs CNN14 embeddings (MTG-Jamendo or stub) -> MLP head; CPU
   train_arousal_tl.py         v3 arousal/valence TL: PANNs CNN14 embeddings (DEAM or stub) -> regression head + heuristic vs truth cross-check; CPU
+  compare_va_mood_vs_mtg.py   v3.1 DEAM V/A → mood vs MTG-trained mood head: agreement / confusion / calm-sad stability / per-class V-A profile; MTG-retirement diagnostic
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator

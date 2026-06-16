@@ -19,25 +19,43 @@ from groovebot.style.attributes import (
 from groovebot.style.augment import random_time_crop, spec_augment
 from groovebot.style.backbone import EMBEDDING_DIM, PANNS_SR, PannsBackbone
 from groovebot.style.features import log_mel_spectrogram
-from groovebot.style.model import GENRES, MOODS, StyleCNN, StyleHead
-from groovebot.style.select import GrooveStyle, GrooveStyleSelector
+from groovebot.style.model import (
+    GENRES, MOODS, StyleCNN, StyleHead, StyleRegressionHead,
+)
+from groovebot.style.mood_from_va import (
+    DEFAULT_QUADRANT_PROTOTYPES,
+    DRAFT_AUX_PROTOTYPES,
+    PROTOTYPES_WITH_AUX,
+    MoodPrototype,
+    mood_probs_from_va,
+)
+from groovebot.style.select import (
+    GrooveStyle, GrooveStyleSelector, make_panns_arousal_fn,
+)
 from groovebot.style.table import MOVES, select_move
 
 __all__ = [
+    "DEFAULT_QUADRANT_PROTOTYPES",
+    "DRAFT_AUX_PROTOTYPES",
     "EMBEDDING_DIM",
     "GENRES",
     "GrooveStyle",
     "GrooveStyleSelector",
     "MOODS",
     "MOVES",
+    "MoodPrototype",
     "PANNS_SR",
+    "PROTOTYPES_WITH_AUX",
     "PannsBackbone",
     "StyleCNN",
     "StyleHead",
+    "StyleRegressionHead",
     "arousal_bucket",
     "estimate_arousal",
     "estimate_tempo",
     "log_mel_spectrogram",
+    "make_panns_arousal_fn",
+    "mood_probs_from_va",
     "random_time_crop",
     "select_move",
     "spec_augment",
