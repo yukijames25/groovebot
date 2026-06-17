@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `ff2fb67`（JointCommand 橋渡し v1 — `StyleGrooveGenerator` + 8 プリミティブ表 + `metronome_from_style` で `GrooveStyle → JointCommand → MuJoCo`、`experiments/render_groove.py` で全プリミティブ GIF/CSV 出力、URDF クランプ二重ガード、公開 IF 不変、pytest 396 passed / 2 skipped）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `a02e070`（JointCommand 橋渡し v1.1 — `groovebot/style/narrate.py` で window summary + per-beat trace、`render_groove` に `--narrate`/`--verbose`/`--narrate-max-beats`、本番出力は `JointCommand` のまま不変、公開 IF 不変、新内部状態ゼロ、リアルタイム制御ループ外、pytest 421 passed / 2 skipped）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
