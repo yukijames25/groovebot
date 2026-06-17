@@ -677,9 +677,9 @@ print(style.as_text())
   catching this). The table keys on arousal bucket, not BPM, so this
   rarely changes the move selection; but downstream code that reads
   `style.tempo_bpm` should expect ±octave.
-- **No JointCommand bridge yet.** Outputs are text labels; the
-  `GrooveGenerator` still uses the M1 rule-based map. The two will
-  meet once labels are stable.
+- **JointCommand bridge: see v1 bridge below.** v1 still emits text
+  labels through `GrooveStyle`; the new `StyleGrooveGenerator` turns
+  those labels into URDF-clamped joint targets.
 
 ### v2 — genre head, real numbers (full GTZAN, two splits)
 
@@ -1104,9 +1104,11 @@ revision shouts at us.
   not redistribute their audio; v3 wires the manifest / training but
   does not ship a one-click data pull. Use the bounded `--from / --to`
   flags.
-- **JointCommand bridge still deferred.** v3 outputs are still text
-  labels via the same `GrooveStyle` dataclass; the path to actual
-  joint trajectories (M3 generator) is the next milestone.
+- **JointCommand bridge — v1 done, M3 generator deferred.** The new
+  `StyleGrooveGenerator` (v1 bridge below) maps `GrooveStyle` to
+  URDF-clamped joint targets for MuJoCo sim. The learned M3 generator
+  (codebook + Transformer, vocal-separated AIST++) is still future
+  work.
 
 **v3 arousal/valence — DEAM static annotations**
 
@@ -1327,6 +1329,82 @@ replaces it) and shrink the `style/` module surface accordingly.
   but not zero. Read the R² as a frozen-embedding feature-quality
   measure, not a from-scratch result.
 
+## JointCommand bridge v1 (style-conditioned MuJoCo groove)
+
+`groovebot/groove_style.py` turns a `GrooveStyle` into a `JointCommand`
+each tick, so the validated style attributes (move, intensity, tempo,
+arousal) actually drive the body. The public IF
+(`GrooveContext` / `JointCommand` / `RobotBackend`) is unchanged.
+
+```
+GrooveStyleSelector.select(audio_window)          # slow (5-10 s)
+                  └─► GrooveStyle  ─► StyleGrooveGenerator.set_style()
+                                                ▲
+Orchestrator (30-50 Hz)  ─► generate(ctx)  ─────┘  ─► JointCommand
+                              │ beat_pos = MetronomePerception(style.tempo_bpm)
+                              ▼
+                       URDF clamp (NFR-4)  ─►  MuJoCoBackend
+```
+
+**Primitive library** (`MOVE_PRIMITIVES`): one function per move in
+`table.MOVES`. `headbang` = neck pitch dip every beat, `bob_nod` is
+the gentle version, `sway` = torso roll over 2 beats, `rock` = torso
+pitch over 2 beats, `fist_pump` = both arms up + shoulder-pitch pulse,
+`clap` = elbow-flex pulse with hands forward, `penlight_wave` = one
+arm raised, idol-style left/right wave, `quiet_listen` = breathing
+motion only. Every primitive scales linearly with `intensity` so
+`intensity=0` collapses to the neutral pose; amplitudes sit inside a
+soft ceiling (`SOFT_AMP`) that is itself inside the URDF limits, with
+the orchestrator's `clamp_command` as the hard safety guard.
+
+**Beat source (v1, deliberately stubbed)**: the perception is still
+`MetronomePerception`, now seeded from `style.tempo_bpm` via
+`metronome_from_style()`. Real beat alignment lands in M2 when
+`ReferenceAligner` joins the Orchestrator — the bridge is unaffected
+because the generator only reads `ctx.beat_pos`.
+
+**Try it:**
+
+```bash
+# every move primitive → its own GIF (data/renders/<move>.gif)
+python -m experiments.render_groove --all-moves --seconds 4
+
+# one move, faster tempo
+python -m experiments.render_groove --style headbang --bpm 140 --seconds 6
+
+# selector path: forward whatever style a clip lands on
+python -m experiments.render_groove --audio data/raw/clip.wav --seconds 8
+
+# headless / no-GL: CSV-only (no GIF)
+python -m experiments.render_groove --all-moves --skip-render
+```
+
+Per-tick joint targets land in `<tag>.csv` next to the GIF. The
+`data/` directory is gitignored so rendered output is local-only.
+
+### Honest limits (v1 bridge)
+
+- **Sim ≠ real servos.** MuJoCo runs kinematic playback (the backend
+  smooths each tick toward the commanded angle). Real PD servos will
+  show overshoot, lag, and torque-limited rise time that the sim does
+  not. The relative motion of the primitives is faithful; the absolute
+  feel will shift on hardware.
+- **Beat source is the BPM metronome, not real alignment.** The
+  generator's phase advances at `style.tempo_bpm`, not the user's actual
+  singing timing. That's a deliberate v1 / v2-shape contract; once M2
+  wires the `ReferenceAligner` into the perception slot, the generator
+  picks up the real `beat_pos` with zero changes here.
+- **Primitives are hand-authored.** Each move is a closed-form curve,
+  not a learned trajectory. The intent is that M3 swaps in a learned
+  `GrooveGenerator` (codebook + Transformer on vocal-separated AIST++);
+  the primitives stay as a baseline / fallback.
+- **Random-weight selector**. `experiments/render_groove.py --audio`
+  builds the selector with random head weights unless callers wire a
+  checkpoint in. The output is a *legal* `GrooveStyle` (the table is
+  deterministic), but the genre / mood labels are not meaningful until
+  trained weights are supplied (use `GrooveStyleSelector.from_panns`
+  for the v3 path).
+
 ## Layout
 
 ```
@@ -1335,6 +1413,7 @@ groovebot/
   backend.py                  RobotBackend interface + MuJoCo / PyBullet / RealServo
   types.py                    GrooveContext / JointCommand (spec §5.1)
   groove.py                   RuleGrooveGenerator — hand-authored groove (M1)
+  groove_style.py             StyleGrooveGenerator — GrooveStyle → JointCommand (v1 bridge)
   orchestrator.py             fixed 30-50 Hz control loop + MetronomePerception stub
   limits.py                   URDF-derived joint limits + clamp helper (NFR-4)
   perception/
@@ -1373,6 +1452,7 @@ experiments/
   train_mood_tl.py            v3 mood TL: PANNs CNN14 embeddings (MTG-Jamendo or stub) -> MLP head; CPU
   train_arousal_tl.py         v3 arousal/valence TL: PANNs CNN14 embeddings (DEAM or stub) -> regression head + heuristic vs truth cross-check; CPU
   compare_va_mood_vs_mtg.py   v3.1 DEAM V/A → mood vs MTG-trained mood head: agreement / confusion / calm-sad stability / per-class V-A profile; MTG-retirement diagnostic
+  render_groove.py            v1 bridge dev tool: drive MuJoCo with StyleGrooveGenerator; --all-moves / --style / --audio; outputs GIF + per-tick joint CSV
 notebooks/
   m0_gtzan_eval.ipynb         turnkey Colab notebook for the GTZAN sweep
 demo_groove.py                end-to-end loop driven by the orchestrator
