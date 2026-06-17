@@ -40,3 +40,12 @@ def test_moves_to_render_all_moves_covers_primitives():
     )
     seen = [tag for tag, _ in _moves_to_render(args)]
     assert set(seen) == set(MOVE_PRIMITIVES.keys())
+
+
+def test_render_groove_exposes_narrate_module():
+    # Light coupling check: the v1.1 narration layer is imported by the
+    # render script (so --narrate / --verbose work without further wiring).
+    from experiments import render_groove
+    from groovebot.style import narrate as narrate_mod
+
+    assert render_groove.narrate is narrate_mod.narrate

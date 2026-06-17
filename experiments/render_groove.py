@@ -48,6 +48,7 @@ from groovebot.groove_style import (
 )
 from groovebot.limits import make_clamp
 from groovebot.orchestrator import MetronomePerception, Orchestrator
+from groovebot.style.narrate import narrate
 from groovebot.style.select import GrooveStyle
 
 
@@ -167,6 +168,8 @@ def render_one(
     height: int,
     skip_render: bool,
     use_ctx_arousal: bool,
+    narrate_mode: str = "off",
+    narrate_max_beats: int | None = None,
 ) -> RenderResult:
     backend = _RecordingBackend(
         MujocoBackend(),
@@ -202,6 +205,16 @@ def render_one(
         f"{'GIF=' + str(gif_path) if ok else 'GIF=skipped'}, "
         f"CSV={csv_path}"
     )
+    if narrate_mode != "off":
+        verbose = narrate_mode == "verbose"
+        print(narrate(
+            style,
+            backend.commands if verbose else None,
+            rate=rate,
+            seconds=seconds,
+            verbose=verbose,
+            max_beats=narrate_max_beats,
+        ))
     return RenderResult(tag=tag, csv_path=csv_path,
                         gif_path=gif_path if ok else None,
                         final_pose=final)
@@ -271,7 +284,16 @@ def main():
     ap.add_argument("--outdir", default=DEFAULT_OUTDIR)
     ap.add_argument("--skip-render", action="store_true",
                     help="Write CSV only, no GIF (useful on headless boxes).")
+    ap.add_argument("--narrate", action="store_true",
+                    help="Print the window summary (perception → decision → "
+                         "action) to stdout after each render.")
+    ap.add_argument("--verbose", action="store_true",
+                    help="Like --narrate, plus a per-beat trace of the "
+                         "primary joint's peak angle.")
+    ap.add_argument("--narrate-max-beats", type=int, default=None,
+                    help="Cap the per-beat trace at N lines (verbose mode).")
     args = ap.parse_args()
+    narrate_mode = "verbose" if args.verbose else ("on" if args.narrate else "off")
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -287,6 +309,8 @@ def main():
             height=args.height,
             skip_render=args.skip_render,
             use_ctx_arousal=args.use_ctx_arousal,
+            narrate_mode=narrate_mode,
+            narrate_max_beats=args.narrate_max_beats,
         )
 
 

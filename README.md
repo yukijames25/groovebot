@@ -1377,10 +1377,43 @@ python -m experiments.render_groove --audio data/raw/clip.wav --seconds 8
 
 # headless / no-GL: CSV-only (no GIF)
 python -m experiments.render_groove --all-moves --skip-render
+
+# v1.1 narration: print "perception → decision → action" to stdout
+python -m experiments.render_groove --style headbang --seconds 2 --skip-render --narrate
+
+# v1.1 verbose: + per-beat trace of the primary joint
+python -m experiments.render_groove --style sway --bpm 120 --seconds 4 --verbose
 ```
 
 Per-tick joint targets land in `<tag>.csv` next to the GIF. The
 `data/` directory is gitignored so rendered output is local-only.
+
+### v1.1 — narration layer (observability)
+
+Production output is still `JointCommand`. `groovebot/style/narrate.py`
+turns the same per-tick state — `GrooveStyle` + the joint-target
+dicts the CSV already records — into a human-readable summary. The
+"perception → decision → action" paragraph is one block per audio
+window; `verbose=True` also emits one line per beat with the primary
+joint's peak angle and beat-phase position.
+
+```
+[0.00-2.00s, 50Hz]
+  知覚: genre=rock, mood=aggressive, arousal=0.85/mid, tempo=120BPM
+  判断: GrooveStyle=headbang@0.85 (rock × mid × aggressive(1.00))
+  動作: 首pitch（縦ノリ）、1拍/サイクル, 主関節=neck_pitch、設計上限|θ|≈0.55 rad
+  beat#0 [t=0.000s] headbang: neck_pitch peak=-0.466 rad @ b+0.48 (off-beat)
+  beat#1 [t=0.500s] headbang: neck_pitch peak=-0.466 rad @ b+0.44 (off-beat)
+  ...
+```
+
+The narration is **read-only**: it imports `GrooveStyle` /
+`MOVE_PRIMITIVES` for descriptors, never invents new state, and is
+not on the 30-50 Hz control path (NFR-7 budget protected). The
+on-beat / off-beat label is a declarative report: the v1 headbang
+primitive's peak sits at `b+0.5` (off-beat), and the narrator says
+so rather than reframing — if you want a different phase relation,
+fix the primitive, not the wording.
 
 ### Honest limits (v1 bridge)
 
@@ -1434,6 +1467,7 @@ groovebot/
     attributes.py             tempo (librosa.beat) + arousal heuristic (RMS × onset density)
     table.py                  Yuki's nori table: (genre, arousal, mood probs) -> (move, intensity)
     select.py                 GrooveStyleSelector — DEAM-learned default + mood_source switch + heuristic fallback
+    narrate.py                v1.1 text narration of style + per-tick joint targets (observability only)
 tools/
   eval_beat.py                evaluation CLI (--bpm click GT or --beats annotation; F/CMLt/AMLt + RT-factor + PNG). Scorer reused by M0'.
   synth_warp.py               apply time-stretch rates to (wav + .beats) -> warped (wav + .beats) for M0' Tier 1
