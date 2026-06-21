@@ -177,30 +177,103 @@ def test_arousal_increases_amplitude(move):
     assert lo < mid < hi
 
 
-# ----------------------------------------------------- beat → rate
+# ------------------------------------------ beat-phase contract (v1.2)
+#
+# Per docs/SYSTEM_SPEC.md §14 v1 phase table:
+#   accent moves (headbang/bob_nod/fist_pump): peak ON each beat
+#   clap: accent at musical beats 2 & 4 (b = 1, 3, 5, ...)
+#   continuous moves (sway/rock/penlight_wave): zero at integer beat,
+#       extreme at half-beat (sin(πb) convention)
 
-def _count_local_minima(xs: list[float]) -> int:
-    n = 0
-    for i in range(1, len(xs) - 1):
-        if xs[i] < xs[i - 1] and xs[i] < xs[i + 1]:
-            n += 1
-    return n
+
+def test_headbang_dip_lands_on_every_beat():
+    # neck_pitch reaches its negative peak at b=0,1,2,3,... — head down
+    # on the beat (metal-style accent). At half-beats it returns to 0.
+    prim = MOVE_PRIMITIVES["headbang"]
+    for b_int in (0.0, 1.0, 2.0, 3.0):
+        nod_on = prim(b_int, 1.0)["neck_pitch"]
+        nod_off = prim(b_int + 0.5, 1.0)["neck_pitch"]
+        assert nod_on == pytest.approx(-0.55, abs=1e-6)
+        assert nod_off == pytest.approx(0.0, abs=1e-6)
 
 
-def test_headbang_completes_one_dip_per_beat():
-    # neck_pitch reaches its negative peak at b=0.5, 1.5, 2.5, 3.5 over
-    # 4 beats → exactly 4 dips. Coarse enough to be stable under
-    # sampling density.
+def test_headbang_has_one_dip_per_beat():
+    # 4-beat window with peak-on-beat phase: interior beat indices
+    # b ∈ {1, 2, 3} are local minima (b=0 and b=4 sit at the window
+    # boundary and don't count as interior). One dip per beat = 3
+    # interior dips in 4 beats.
     prim = MOVE_PRIMITIVES["headbang"]
     bs = np.linspace(0.0, 4.0, 4001)
     vals = [prim(float(b), 1.0)["neck_pitch"] for b in bs]
-    assert _count_local_minima(vals) == 4
+    interior_minima = 0
+    for i in range(1, len(vals) - 1):
+        if vals[i] < vals[i - 1] and vals[i] < vals[i + 1]:
+            interior_minima += 1
+    assert interior_minima == 3
+
+
+def test_bob_nod_peak_lands_on_every_beat():
+    prim = MOVE_PRIMITIVES["bob_nod"]
+    for b_int in (0.0, 1.0, 2.0, 3.0):
+        nod_on = prim(b_int, 1.0)["neck_pitch"]
+        nod_off = prim(b_int + 0.5, 1.0)["neck_pitch"]
+        assert nod_on == pytest.approx(-0.25, abs=1e-6)
+        assert nod_off == pytest.approx(0.0, abs=1e-6)
+
+
+def test_fist_pump_peak_lands_on_every_beat():
+    # Arms highest (sh_pitch most negative = pitched-up) ON the beat,
+    # elbow most flexed ON the beat. At half-beat we're at rest.
+    prim = MOVE_PRIMITIVES["fist_pump"]
+    for b_int in (0.0, 1.0, 2.0, 3.0):
+        on = prim(b_int, 1.0)
+        off = prim(b_int + 0.5, 1.0)
+        assert on["l_shoulder_pitch"] == pytest.approx(-1.9, abs=1e-6)
+        assert off["l_shoulder_pitch"] == pytest.approx(-1.5, abs=1e-6)
+        assert on["l_elbow"] == pytest.approx(1.0, abs=1e-6)
+        assert off["l_elbow"] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_clap_accent_lands_on_beats_2_and_4():
+    # 0-indexed beat_pos: musical beats 1,2,3,4 correspond to b=0,1,2,3.
+    # Backbeat clap → accent at b=1 and b=3 (and 5, 7, ...). At b=0,2
+    # we're at rest. Period is 2 beats.
+    prim = MOVE_PRIMITIVES["clap"]
+    rest_b0 = prim(0.0, 1.0)
+    clap_b1 = prim(1.0, 1.0)
+    rest_b2 = prim(2.0, 1.0)
+    clap_b3 = prim(3.0, 1.0)
+    # Rest position: pulse=0 → l_roll=1.0, elbow=1.2.
+    assert rest_b0["l_shoulder_roll"] == pytest.approx(1.0, abs=1e-6)
+    assert rest_b0["l_elbow"] == pytest.approx(1.2, abs=1e-6)
+    # Clap position: pulse=1 → l_roll=1.6, elbow=1.8.
+    assert clap_b1["l_shoulder_roll"] == pytest.approx(1.6, abs=1e-6)
+    assert clap_b1["l_elbow"] == pytest.approx(1.8, abs=1e-6)
+    # 2-beat periodicity: beat 0 == beat 2, beat 1 == beat 3.
+    assert rest_b2["l_shoulder_roll"] == pytest.approx(
+        rest_b0["l_shoulder_roll"], abs=1e-9)
+    assert clap_b3["l_shoulder_roll"] == pytest.approx(
+        clap_b1["l_shoulder_roll"], abs=1e-9)
+    # And clap > rest in amplitude by a clear margin.
+    assert clap_b1["l_shoulder_roll"] > rest_b0["l_shoulder_roll"] + 0.3
+    assert clap_b3["l_elbow"] > rest_b2["l_elbow"] + 0.3
+
+
+def test_sway_continuous_zero_on_beats_peak_off_beats():
+    # Continuous: torso_roll = 0.35 * sin(πb). The body crosses center
+    # on each integer beat and hits the extreme at the half-beat. This
+    # is the "in-the-pocket" sway feel; the beat carries motion
+    # direction rather than a momentary accent.
+    prim = MOVE_PRIMITIVES["sway"]
+    for b_int in (0.0, 1.0, 2.0, 3.0, 4.0):
+        assert prim(b_int, 1.0)["torso_roll"] == pytest.approx(0.0, abs=1e-9)
+    assert prim(0.5, 1.0)["torso_roll"] == pytest.approx(0.35, abs=1e-6)
+    assert prim(1.5, 1.0)["torso_roll"] == pytest.approx(-0.35, abs=1e-6)
 
 
 def test_sway_completes_one_cycle_per_two_beats():
-    # torso_roll = 0.35 * sin(π b) on a 4-beat window crosses zero at
-    # interior integer beats b=1, 2, 3 → 3 sign changes (endpoint zeros
-    # at b=0 and b=4 don't count as interior crossings).
+    # 4 beats of sin(πb) crosses zero at b=1, 2, 3 → 3 interior crossings
+    # (period = 2 beats).
     prim = MOVE_PRIMITIVES["sway"]
     bs = np.linspace(0.0, 4.0, 4001)
     vals = [prim(float(b), 1.0)["torso_roll"] for b in bs]
@@ -209,6 +282,27 @@ def test_sway_completes_one_cycle_per_two_beats():
         if vals[i - 1] * vals[i] < 0:
             crossings += 1
     assert crossings == 3
+
+
+def test_rock_continuous_zero_on_beats_peak_off_beats():
+    prim = MOVE_PRIMITIVES["rock"]
+    for b_int in (0.0, 1.0, 2.0, 3.0):
+        assert prim(b_int, 1.0)["torso_pitch"] == pytest.approx(0.0, abs=1e-9)
+    assert prim(0.5, 1.0)["torso_pitch"] == pytest.approx(0.30, abs=1e-6)
+    assert prim(1.5, 1.0)["torso_pitch"] == pytest.approx(-0.30, abs=1e-6)
+
+
+def test_penlight_wave_continuous_zero_on_beats_peak_off_beats():
+    # Wave channels (neck_yaw, torso_roll) follow sin(πb) — same phase
+    # convention as sway/rock.
+    prim = MOVE_PRIMITIVES["penlight_wave"]
+    for b_int in (0.0, 1.0, 2.0, 3.0):
+        out = prim(b_int, 1.0)
+        assert out["neck_yaw"] == pytest.approx(0.0, abs=1e-9)
+        assert out["torso_roll"] == pytest.approx(0.0, abs=1e-9)
+    out_half = prim(0.5, 1.0)
+    assert out_half["neck_yaw"] == pytest.approx(0.40, abs=1e-6)
+    assert out_half["torso_roll"] == pytest.approx(0.20, abs=1e-6)
 
 
 # ----------------------------------------------------- generator wiring
@@ -244,11 +338,13 @@ def test_generator_routes_move_to_primitive():
 
 
 def test_set_style_updates_active_move():
+    # b=0.25 is non-zero for both moves under their v1.2 phases
+    # (sway sin(π·0.25)≈0.71; headbang nod = -0.275 at b=0.25).
     gen = StyleGrooveGenerator(style=_style("sway", intensity=1.0))
-    cmd1 = gen.generate(_ctx(0.5))
+    cmd1 = gen.generate(_ctx(0.25))
     assert cmd1.targets["torso_roll"] != 0.0
     gen.set_style(_style("headbang", intensity=1.0))
-    cmd2 = gen.generate(_ctx(0.5))
+    cmd2 = gen.generate(_ctx(0.25))
     assert cmd2.targets["torso_roll"] == 0.0       # sway no longer active
     assert cmd2.targets["neck_pitch"] != 0.0       # headbang now driving
 

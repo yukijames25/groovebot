@@ -213,12 +213,59 @@ def test_beat_trace_uses_override_bpm():
 def test_beat_trace_marks_on_beat_for_sway():
     # sway's primary joint torso_roll = 0.35 * sin(πb). Within beat 0
     # (b ∈ [0, 1)) the peak is at b=0.5 — off-beat by the narrator's
-    # 10%-corner rule. This is *correct*: the v1 sway has its swing
-    # peak mid-beat, and the narrator must say so honestly.
+    # 10%-corner rule. This is *correct*: under the v1.2 phase
+    # contract, continuous moves (sway/rock/penlight_wave) peak
+    # mid-beat by design, and the narrator must say so honestly.
     style = _style("sway", intensity=1.0, bpm=120.0)
     commands = _run_for_commands(style, seconds=1.0, rate=50.0)
     trace = format_beat_trace(style, commands=commands, rate=50.0)
     assert "off-beat" in trace[0]
+
+
+@pytest.mark.parametrize("move", ["headbang", "bob_nod", "fist_pump"])
+def test_beat_trace_marks_on_beat_for_accent_moves(move):
+    # v1.2 phase contract: accent moves peak ON each beat. The
+    # narration's 10%-corner rule should label them "on-beat".
+    style = _style(move, intensity=1.0, bpm=120.0)
+    commands = _run_for_commands(style, seconds=2.0, rate=50.0)
+    trace = format_beat_trace(style, commands=commands, rate=50.0)
+    assert trace
+    # Every beat line should carry the on-beat label.
+    for line in trace:
+        assert "on-beat" in line, f"{move}: expected on-beat in '{line}'"
+
+
+def test_beat_trace_marks_on_beat_for_clap_accents():
+    # v1.2 phase contract: clap accents land at b=1, 3, 5, ...
+    # (musical beats 2 & 4 = backbeat). The clap pulse is continuous
+    # over a 2-beat period: pulse=0 at b=0, peaks at b=1, back to 0
+    # at b=2. Per-bucket peak phase asymmetry is the signature:
+    #   bucket 0 (musical beat 1): pulse rising → peak_phase near 1.0
+    #   bucket 1 (musical beat 2): pulse at top → peak_phase near 0.0
+    #   bucket 2 (musical beat 3): pulse rising again → near 1.0
+    #   bucket 3 (musical beat 4): pulse at top again → near 0.0
+    # All four are within the 10% on-beat corner, so labels are all
+    # "on-beat" — but the position within the bucket reveals where
+    # the accent really sits.
+    style = _style("clap", intensity=1.0, bpm=120.0)
+    commands = _run_for_commands(style, seconds=2.0, rate=50.0)
+    trace = format_beat_trace(style, commands=commands, rate=50.0)
+    assert len(trace) == 4
+
+    def _peak_phase(line: str) -> float:
+        token = next(t for t in line.split() if t.startswith("b+"))
+        return float(token.removeprefix("b+"))
+
+    phases = [_peak_phase(line) for line in trace]
+    # Backbeat: musical 2 & 4 (bucket 1, 3) peak at the beat itself
+    # (phase ≈ 0), while musical 1 & 3 (bucket 0, 2) are the rising
+    # buildup (phase near the right edge).
+    assert phases[1] < 0.10
+    assert phases[3] < 0.10
+    assert phases[0] > 0.90
+    assert phases[2] > 0.90
+    for line in trace:
+        assert "on-beat" in line
 
 
 # ---------------------------------------------- top-level narrate()

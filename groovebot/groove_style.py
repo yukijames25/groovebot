@@ -70,70 +70,100 @@ def neutral_pose() -> dict[str, float]:
 #
 # Conventions:
 #   - beat_pos is musical position in beats (same as ctx.beat_pos).
+#     Integer b is the down/click of each beat; b=0 is the first beat.
 #   - intensity ∈ [0, 1] scales amplitude.
-#   - "one cycle per beat" uses 2π·b. "one cycle per 2 beats" uses π·b.
-#     The choice is per-move (headbang is fast, sway is slow).
 #   - At intensity=1.0 every value stays inside the URDF limit.
+#
+# Beat-phase contract (v1.2, see docs/SYSTEM_SPEC.md §14 v1):
+#
+#   move          | category   | cycle  | peak / accent lands at
+#   --------------|------------|--------|---------------------------------
+#   headbang      | accent     | 1 beat | on every beat (b = 0,1,2,...)
+#   bob_nod       | accent     | 1 beat | on every beat
+#   fist_pump     | accent     | 1 beat | on every beat
+#   clap          | accent     | 2 beat | on musical beats 2 & 4
+#                 |            |        |   (b = 1,3,5,... in 0-indexed
+#                 |            |        |    beat_pos = backbeat)
+#   sway          | continuous | 2 beat | zero-cross on each beat;
+#                 |            |        |   peak at half-beat (sin(πb))
+#   rock          | continuous | 2 beat | same convention as sway
+#   penlight_wave | continuous | 2 beat | same convention as sway
+#   quiet_listen  | minimal    | 4 beat | breathing only, no accent
+#
+# All accent moves use cos(2π·b) (period 1 beat) phased so that the
+# accent samples ON the beat. Clap uses cos(π·b) (period 2 beats) phased
+# so that accents land on b=1,3,... — the backbeat. Continuous moves use
+# sin(π·b) so they cross the center on every beat and reach their
+# extreme between beats: this is the "in-the-pocket" sway feel and is a
+# deliberate, consistent phase choice across sway/rock/penlight_wave.
 
 Primitive = Callable[[float, float], dict[str, float]]
 
 
 def _prim_headbang(b: float, i: float) -> dict[str, float]:
-    """Fast forward nod, one dip per beat (metal-style)."""
+    """Fast forward nod, head down ON every beat (metal-style)."""
     amp = 0.55 * i
-    nod = -amp * 0.5 * (1.0 - math.cos(2.0 * math.pi * b))
+    nod = -amp * 0.5 * (1.0 + math.cos(2.0 * math.pi * b))
     return {"neck_pitch": nod}
 
 
 def _prim_bob_nod(b: float, i: float) -> dict[str, float]:
-    """Small head bob, one nod per beat."""
+    """Small head bob, peak nod ON every beat."""
     amp = 0.25 * i
-    nod = -amp * 0.5 * (1.0 - math.cos(2.0 * math.pi * b))
+    nod = -amp * 0.5 * (1.0 + math.cos(2.0 * math.pi * b))
     return {"neck_pitch": nod}
 
 
 def _prim_sway(b: float, i: float) -> dict[str, float]:
-    """Side-to-side torso sway, one full sway per 2 beats."""
+    """Side-to-side torso sway, one full sway per 2 beats.
+
+    Continuous oscillation: torso crosses center on each integer beat
+    and hits its extreme at the half-beat. The beat is the carrier of
+    motion direction, not an accent.
+    """
     amp = 0.35 * i
     roll = amp * math.sin(math.pi * b)
     return {"torso_roll": roll}
 
 
 def _prim_rock(b: float, i: float) -> dict[str, float]:
-    """Forward-back torso rock, one full rock per 2 beats."""
+    """Forward-back torso rock, one full rock per 2 beats (continuous)."""
     amp = 0.30 * i
     pitch = amp * math.sin(math.pi * b)
     return {"torso_pitch": pitch}
 
 
 def _prim_fist_pump(b: float, i: float) -> dict[str, float]:
-    """Both arms raised, shoulder pitch pulses once per beat.
+    """Both arms raised, shoulder pitch pulses peak ON every beat.
 
     Every term carries the intensity factor so i=0 collapses to the
-    neutral pose. The arms come up as i grows, and pulse on top.
+    neutral pose. The arms come up as i grows, and the pulse peaks on
+    the beat.
     """
-    pulse = 0.5 * (1.0 - math.cos(2.0 * math.pi * b))           # 0..1
-    sh_pitch = (-1.5 - 0.40 * pulse) * i                        # i=1: [-1.9, -1.5]
+    pulse = 0.5 * (1.0 + math.cos(2.0 * math.pi * b))           # peak=1 at b=0,1,2,...
+    sh_pitch = (-1.5 - 0.40 * pulse) * i                        # i=1: -1.9 on-beat, -1.5 off
     return {
         "l_shoulder_pitch": sh_pitch,
         "r_shoulder_pitch": sh_pitch,
         "l_shoulder_roll": 0.40 * i,
         "r_shoulder_roll": -0.40 * i,
-        "l_elbow": (0.5 + 0.5 * pulse) * i,                     # i=1: [0.5, 1.0]
+        "l_elbow": (0.5 + 0.5 * pulse) * i,                     # i=1: 1.0 on-beat, 0.5 off
         "r_elbow": (0.5 + 0.5 * pulse) * i,
     }
 
 
 def _prim_clap(b: float, i: float) -> dict[str, float]:
-    """Hands forward; roll/elbow flex peak each beat (clap on the pulse).
+    """Hands forward, clap accents on musical beats 2 & 4 (the backbeat).
 
-    Every term carries intensity so i=0 returns the neutral pose.
+    Period is 2 beats: pulse=0 at b=0,2,4,... (musical beats 1,3, the
+    "and" / rest) and pulse=1 at b=1,3,5,... (musical beats 2,4, the
+    clap moment). Every term carries intensity so i=0 returns neutral.
     """
-    pulse = 0.5 * (1.0 - math.cos(2.0 * math.pi * b))           # 0..1
+    pulse = 0.5 * (1.0 - math.cos(math.pi * b))                 # peak=1 at b=1,3,5,...
     sh_pitch = -0.6 * i
-    l_roll = (1.0 + 0.6 * pulse) * i                            # i=1: [1.0, 1.6]
+    l_roll = (1.0 + 0.6 * pulse) * i                            # i=1: 1.0 rest, 1.6 clap
     r_roll = -(1.0 + 0.6 * pulse) * i
-    elbow = (1.2 + 0.6 * pulse) * i                             # i=1: [1.2, 1.8]
+    elbow = (1.2 + 0.6 * pulse) * i                             # i=1: 1.2 rest, 1.8 clap
     return {
         "l_shoulder_pitch": sh_pitch,
         "r_shoulder_pitch": sh_pitch,
@@ -145,9 +175,11 @@ def _prim_clap(b: float, i: float) -> dict[str, float]:
 
 
 def _prim_penlight_wave(b: float, i: float) -> dict[str, float]:
-    """One arm raised high, swaying left/right with the bar; head follows.
+    """One arm raised high, swaying with the bar (continuous, 2-beat cycle).
 
-    Every term carries intensity → i=0 returns the neutral pose.
+    Same phase convention as sway/rock: sin(π·b) crosses zero on each
+    integer beat, hits the extreme between beats. Every term carries
+    intensity → i=0 returns the neutral pose.
     """
     wave = math.sin(math.pi * b)                                # ±1, period 2 beats
     return {

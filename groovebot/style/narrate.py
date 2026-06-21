@@ -98,10 +98,14 @@ def _beat_phase_label(phase_in_beat: float) -> str:
     """Map a 0..1 phase to "on-beat" / "off-beat".
 
     Near the integer boundaries (within 10%) we call it on-beat, the
-    rest of the beat is off-beat. This is informational only — the v1
-    primitives have their peaks at specific phases (e.g. headbang peaks
-    at b+0.5 by design), and the narration reports that honestly
-    instead of forcing a beat-aligned story.
+    rest of the beat is off-beat. This is informational only — under
+    the v1.2 phase contract (see `groove_style.py` and SYSTEM_SPEC
+    §14 v1 phase table) accent moves (headbang/bob_nod/fist_pump)
+    peak ON the beat, clap accents land at b=1,3,... (musical 2 & 4),
+    and continuous moves (sway/rock/penlight_wave) have their extreme
+    at the half-beat by design. The narration reports whichever phase
+    the primitive actually peaks at — including the "off-beat" report
+    for continuous moves, which is correct behavior, not a bug.
     """
     if phase_in_beat < 0.10 or phase_in_beat > 0.90:
         return "on-beat"
