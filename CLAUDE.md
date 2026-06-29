@@ -33,7 +33,7 @@
 > `/clear` や新セッション後でもこのセクションだけ読めば文脈を復元できる、を目標に維持する。
 > 進捗が動いたら都度更新する（古いまま放置しない）。
 
-最新コミット: `aeb518f`（JointCommand 橋渡し v1.2 — プリミティブ拍位相の規約化。`groovebot/groove_style.py` の `MOVE_PRIMITIVES` を再位相: accent 系 headbang/bob_nod/fist_pump はピークを on-beat (`(1+cos 2πb)/2`)、clap は backbeat (`(1-cos πb)/2`、b=1,3 でピーク=楽器的 2 & 4 拍)、連続系 sway/rock/penlight_wave は `sin(πb)` を据え置き(整数拍ゼロ通過＆半拍最大)。振幅・SOFT_AMP・intensity スケーリング・URDF クランプ・公開 IF いずれも不変。`tests/test_groove_style.py` に各 move の意図位相アサート(+7 件)、`tests/test_narrate.py` に accent 3 種 on-beat + clap backbeat 位相指紋アサート(+4 件)。pytest 432 passed / 2 skipped）／ タグ: `m0`, `m1`, `m0-1`。
+最新コミット: `85321f2`（end-to-end ショーケースランナー — `experiments/run_showcase.py` 新規 ＋ `experiments/render_groove.py` の `--audio` 経路を訓練済み ckpt 必須化、ランダム重みは `--allow-untrained` 明示時のみ。出力は `data/renders/showcase/<stem>/{*.gif,*.csv,narration.txt}` ＋ `showcase_summary.md`）／ 直前 `69aed53`（分位点 affect 較正 — `tools/calibrate_affect.py` で DEAM val スプリット n=270 から arousal tertile 境界 (low_max=**0.410** / high_min=**0.529**) と V/A neutral 中心 (a=0.473, v=0.484) を導出、`groovebot/style/affect_calibration.json` を単一出所として `attributes.arousal_bucket()` / `mood_from_va.mood_probs_from_va()` が読む、JSON 欠如時は 0.33/0.66 にフォールバック、showcase 4 本は較正プールに含まない held-out。再走で `western_metal` (0.63) と `jp_uptempo` (0.64) が mid→**high** に移り intensity 0.62→0.93 / 0.61→0.92 に跳ね、`jp_ballad` (0.42) と `western_classical` (0.49) は妥当に mid 維持。move 選択は不変=正解（move は genre×mood 支配）。pytest 433 passed / 2 skipped）／ タグ: `m0`, `m1`, `m0-1`。
 
 ### 完了
 - **M1**: リアルタイム groove ループ（`orchestrator` + URDF 可動域クランプ + tests）。`python demo_groove.py` で MuJoCo 上で動く端到端デモ。
