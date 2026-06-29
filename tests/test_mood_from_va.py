@@ -54,9 +54,11 @@ def test_quadrant_corners_argmax_to_their_mood(valence, arousal, expected):
 
 
 def test_center_point_is_roughly_uniform_over_quadrants():
-    """A query at the V/A center should not strongly prefer any one
-    of the 4 quadrants (within ~5pp of uniform)."""
-    probs = mood_probs_from_va(0.5, 0.5)
+    """A query at the calibrated V/A center should not strongly prefer
+    any one of the 4 quadrants (within ~5pp of uniform). The center is
+    re-mapped to (0.5, 0.5) by the calibration loader, so testing with
+    `recenter=False` at (0.5, 0.5) hits the same geometric point."""
+    probs = mood_probs_from_va(0.5, 0.5, recenter=False)
     quad = ["happy", "aggressive", "calm", "sad"]
     for m in quad:
         assert probs[m] == pytest.approx(0.25, abs=0.05)

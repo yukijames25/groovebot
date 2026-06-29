@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-29T05:14:13Z",
+  "source": "DEAM val split (val_frac=0.15, test_frac=0.15, seed=0)",
+  "head_checkpoint": "data\\style_v3_arousal\\style_head_arousal.pt",
+  "n_calibration": 270,
+  "arousal": {
+    "bucket_low_max": 0.4099757640533114,
+    "bucket_high_min": 0.5292624835783666,
+    "n": 270,
+    "min": 0.1805305778980255,
+    "max": 0.7315857410430908,
+    "mean": 0.46985480829521464,
+    "std": 0.12177643937601886,
+    "median": 0.4726848006248474,
+    "quantiles": {
+      "p10": 0.3130959689617157,
+      "p25": 0.37843167781829834,
+      "p33_3": 0.4099757640533114,
+      "p50": 0.4726848006248474,
+      "p66_7": 0.5292624835783666,
+      "p75": 0.5628481358289719,
+      "p90": 0.6189419150352478
+    }
+  },
+  "valence": {
+    "n": 270,
+    "min": 0.09956108033657074,
+    "max": 0.7397982478141785,
+    "mean": 0.47711541415364656,
+    "std": 0.11458021278794377,
+    "median": 0.4843200445175171,
+    "quantiles": {
+      "p10": 0.32724761962890625,
+      "p25": 0.39517052471637726,
+      "p33_3": 0.42056433080598654,
+      "p50": 0.4843200445175171,
+      "p66_7": 0.5377399369343072,
+      "p75": 0.5649702250957489,
+      "p90": 0.6213250696659088
+    }
+  },
+  "neutral_center": {
+    "arousal": 0.4726848006248474,
+    "valence": 0.4843200445175171
+  },
+  "bucket_counts_on_calibration_pool": {
+    "low": 90,
+    "mid": 90,
+    "high": 90
+  },
+  "notes": "Bucket boundaries are TERTILES of the arousal head's predictions on a held-out DEAM val split. The neutral center is the median of the head's predictions, used to re-center the V/A circumplex map in mood_from_va.py. Showcase clips are NEVER used here — they remain held-out for downstream qualitative checks."
+}

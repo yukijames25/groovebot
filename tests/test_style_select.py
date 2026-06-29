@@ -12,9 +12,12 @@ import numpy as np
 import pytest
 
 from groovebot.style.attributes import (
+    _FALLBACK_HIGH_MIN,
+    _FALLBACK_LOW_MAX,
     arousal_bucket,
     estimate_arousal,
     estimate_tempo,
+    reload_calibration as _reload_attr_cal,
 )
 from groovebot.style.model import GENRES, MOODS
 from groovebot.style.select import GrooveStyle, GrooveStyleSelector
@@ -56,13 +59,46 @@ def test_attributes_arousal_higher_for_dense_clicks():
     assert a_d > a_q
 
 
-def test_arousal_bucket_thresholds():
+def test_arousal_bucket_thresholds_under_calibration():
+    """Calibration JSON (groovebot/style/affect_calibration.json) is the
+    source of truth. The function returns low / mid / high partitioned at
+    the JSON's `bucket_low_max` and `bucket_high_min`. We read the JSON
+    rather than baking the numbers so the test does not lock the
+    calibration into a stale point estimate.
+    """
+    from groovebot.style import attributes as _attr_mod
+    _reload_attr_cal()
+    cal = _attr_mod._load_calibration()
+    if cal is None:
+        pytest.skip("affect_calibration.json missing; fallback tested separately.")
+    lo, hi = cal["bucket_low_max"], cal["bucket_high_min"]
+    # Both thresholds must sit in (0, 1) and be ordered.
+    assert 0.0 < lo < hi < 1.0
+    # Strict-below low boundary → "low"; at-or-above → "mid" / "high".
     assert arousal_bucket(0.0) == "low"
-    assert arousal_bucket(0.32) == "low"
-    assert arousal_bucket(0.33) == "mid"
-    assert arousal_bucket(0.65) == "mid"
-    assert arousal_bucket(0.66) == "high"
+    assert arousal_bucket(lo - 1e-3) == "low"
+    assert arousal_bucket(lo) == "mid"
+    assert arousal_bucket(hi - 1e-3) == "mid"
+    assert arousal_bucket(hi) == "high"
     assert arousal_bucket(1.0) == "high"
+
+
+def test_arousal_bucket_fallback_when_no_calibration(monkeypatch, tmp_path):
+    """If affect_calibration.json is missing, the function falls back to
+    the absolute 0.33 / 0.66 thresholds — so units without calibration
+    still produce a legal bucket."""
+    from groovebot.style import attributes as _attr_mod
+    monkeypatch.setattr(_attr_mod, "_CALIBRATION_PATH", tmp_path / "nope.json")
+    _reload_attr_cal()
+    try:
+        assert arousal_bucket(0.0) == "low"
+        assert arousal_bucket(_FALLBACK_LOW_MAX - 1e-3) == "low"
+        assert arousal_bucket(_FALLBACK_LOW_MAX) == "mid"
+        assert arousal_bucket(_FALLBACK_HIGH_MIN - 1e-3) == "mid"
+        assert arousal_bucket(_FALLBACK_HIGH_MIN) == "high"
+        assert arousal_bucket(1.0) == "high"
+    finally:
+        _reload_attr_cal()  # restore cached real calibration for downstream tests
 
 
 def test_selector_end_to_end_returns_groove_style():

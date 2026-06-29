@@ -30,13 +30,59 @@ NOT argmax. The output dict sums to 1.0 over `MOODS` and is shaped to
 feed straight into `table.select_move`, which already treats mood as a
 soft distribution. The companion `dominant_mood_from_va` is a logging
 convenience.
+
+Neutral-center re-mapping:
+    The DEAM-trained regression head regresses to a mean that is NOT 0.5
+    (showcase v1.2 measured arousal mean ≈ 0.47, valence ≈ 0.48 on the
+    held-out val pool). To keep the circumplex "centered on what the head
+    actually emits," queries are re-mapped so the calibrated median maps
+    to (0.5, 0.5) before Gaussian membership runs. Linear two-segment
+    rescale; identity when the calibration JSON is absent.
 """
 from __future__ import annotations
+import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Mapping
 
 from groovebot.style.model import MOODS
+
+
+_CALIBRATION_PATH = Path(__file__).resolve().parent / "affect_calibration.json"
+_CENTER_CACHE: tuple[float, float] | None = None
+
+
+def _load_neutral_center() -> tuple[float, float]:
+    """Return (median_arousal, median_valence) from affect_calibration.json.
+    Falls back to (0.5, 0.5) if missing. Cached at module scope."""
+    global _CENTER_CACHE
+    if _CENTER_CACHE is not None:
+        return _CENTER_CACHE
+    try:
+        data = json.loads(_CALIBRATION_PATH.read_text(encoding="utf-8"))
+        nc = data["neutral_center"]
+        _CENTER_CACHE = (float(nc["arousal"]), float(nc["valence"]))
+    except (FileNotFoundError, KeyError, json.JSONDecodeError, ValueError):
+        _CENTER_CACHE = (0.5, 0.5)
+    return _CENTER_CACHE
+
+
+def reload_calibration() -> None:
+    """Drop the cached neutral center so the next call re-reads JSON."""
+    global _CENTER_CACHE
+    _CENTER_CACHE = None
+
+
+def _recenter(value: float, center: float) -> float:
+    """Linear two-segment rescale that maps `center` to 0.5 while keeping
+    0 and 1 fixed. Identity when `center == 0.5`."""
+    v = max(0.0, min(1.0, float(value)))
+    if abs(center - 0.5) < 1e-9 or center <= 0.0 or center >= 1.0:
+        return v
+    if v <= center:
+        return 0.5 * (v / center)
+    return 0.5 + 0.5 * (v - center) / (1.0 - center)
 
 
 @dataclass(frozen=True)
@@ -99,16 +145,26 @@ def mood_probs_from_va(
     *,
     prototypes: Mapping[str, MoodPrototype] = DEFAULT_QUADRANT_PROTOTYPES,
     sigma: float = DEFAULT_SIGMA,
+    recenter: bool = True,
 ) -> dict[str, float]:
     """Soft probability over `MOODS` from a (V, A) point.
 
-    Both inputs are 0..1 (DEAM-calibrated by `sam_to_unit`). Output
-    sums to 1.0; mood classes absent from `prototypes` get probability
-    0. When `prototypes` is empty or all weights are 0, returns uniform
+    Both inputs are 0..1 (DEAM-calibrated by `sam_to_unit`). The query
+    is re-centered onto the calibrated medians (see module docstring)
+    before Gaussian membership; pass `recenter=False` to disable for
+    tests that target the raw geometry. Output sums to 1.0; mood
+    classes absent from `prototypes` get probability 0. When
+    `prototypes` is empty or all weights are 0, returns uniform
     (degenerate but safe).
     """
-    a = float(max(0.0, min(1.0, arousal)))
-    v = float(max(0.0, min(1.0, valence)))
+    a_raw = float(max(0.0, min(1.0, arousal)))
+    v_raw = float(max(0.0, min(1.0, valence)))
+    if recenter:
+        center_a, center_v = _load_neutral_center()
+        a = _recenter(a_raw, center_a)
+        v = _recenter(v_raw, center_v)
+    else:
+        a, v = a_raw, v_raw
     s = max(float(sigma), 1e-6)
 
     raw: dict[str, float] = {m: 0.0 for m in MOODS}
