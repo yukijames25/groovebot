@@ -7,9 +7,17 @@ GIF of the resulting motion. Two modes:
   * `--style MOVE` (default if no audio): force a single move primitive
     from the `table.MOVES` vocabulary. Bypasses the selector — handy
     for inspecting one primitive at a time without needing a clip.
-  * `--audio PATH`: run `GrooveStyleSelector` (v1/v2 CNN path, random
-    weights unless you wire a checkpoint) on the clip and visualise
-    whatever style the table picks.
+  * `--audio PATH`: run `GrooveStyleSelector` (v3 PANNs path, **trained
+    checkpoints required**) on the clip and visualise whatever style
+    the table picks. Missing ckpts → loud INVALID stop unless
+    `--allow-untrained` is set.
+    Defaults:
+      - PANNs backbone: `data/raw/Cnn14_mAP=0.431.pth`
+      - genre head:     `data/style_v3_fault/style_head.pt`
+      - arousal head:   `data/style_v3_arousal/style_head_arousal.pt`
+    Mood defaults to `va` (derived from learned arousal+valence via the
+    circumplex map); pass `--mood-source head` to use the MTG-trained
+    mood head instead.
 
 `--all-moves` renders every primitive in `MOVE_PRIMITIVES` to its own
 GIF — the canonical "primitive library at a glance" output.
@@ -57,6 +65,16 @@ URDF = os.path.join(
 )
 DEFAULT_OUTDIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "renders"
+)
+
+# Default trained checkpoint locations. The selector path requires *all*
+# four files (PANNs backbone + genre head + arousal regression head).
+# Missing files trigger a loud INVALID stop unless --allow-untrained is set.
+_REPO_ROOT = os.path.dirname(os.path.dirname(__file__))
+DEFAULT_PANNS_CKPT = os.path.join(_REPO_ROOT, "data", "raw", "Cnn14_mAP=0.431.pth")
+DEFAULT_GENRE_HEAD = os.path.join(_REPO_ROOT, "data", "style_v3_fault", "style_head.pt")
+DEFAULT_AROUSAL_HEAD = os.path.join(
+    _REPO_ROOT, "data", "style_v3_arousal", "style_head_arousal.pt"
 )
 
 
@@ -236,14 +254,93 @@ def _forced_style(move: str, *, bpm: float, intensity: float) -> GrooveStyle:
     )
 
 
-def _style_from_audio(audio_path: str) -> GrooveStyle:
-    import librosa
+def _build_selector(
+    *,
+    panns_ckpt: str,
+    genre_head: str,
+    arousal_head: str,
+    mood_source: str = "va",
+    allow_untrained: bool = False,
+):
+    """Build a `GrooveStyleSelector` for the showcase pipeline.
+
+    Validates that all three trained checkpoints exist (the PANNs CNN14
+    backbone, the GTZAN-trained genre/mood classification head, and the
+    DEAM-trained arousal/valence regression head). Missing files trigger
+    a loud `INVALID: trained checkpoint not found` and a `SystemExit`.
+
+    Pass `allow_untrained=True` for a smoke-test path with random
+    weights (selector still emits legal output, but genre / arousal
+    numbers are meaningless).
+    """
     from groovebot.style.select import GrooveStyleSelector
 
+    missing: list[tuple[str, str]] = []
+    for label, path in (
+        ("PANNs CNN14 backbone (data/raw/Cnn14_mAP=0.431.pth)", panns_ckpt),
+        ("genre TL head (data/style_v3_fault/style_head.pt)", genre_head),
+        ("arousal/valence TL head (data/style_v3_arousal/style_head_arousal.pt)",
+         arousal_head),
+    ):
+        if not os.path.isfile(path):
+            missing.append((label, path))
+
+    if missing:
+        if not allow_untrained:
+            print(
+                "\n\n==============================================================\n"
+                "INVALID: trained checkpoint not found.\n"
+                "==============================================================\n"
+                "The --audio path is wired to load trained transfer-learning\n"
+                "heads + the PANNs CNN14 backbone. The following files are\n"
+                "missing:",
+                file=os.sys.stderr,
+            )
+            for label, path in missing:
+                print(f"  - {label}\n      expected at: {path}",
+                      file=os.sys.stderr)
+            print(
+                "\n  - Train them with experiments/train_genre_tl.py and\n"
+                "    experiments/train_arousal_tl.py (see CLAUDE.md v3 nodes),\n"
+                "  - Or pass --allow-untrained to run with random weights\n"
+                "    (legal output but genre / arousal are meaningless).\n",
+                file=os.sys.stderr,
+            )
+            raise SystemExit(2)
+        print(
+            "[render_groove] WARNING: trained ckpts missing — running with "
+            "random weights (--allow-untrained).",
+            file=os.sys.stderr,
+        )
+        return GrooveStyleSelector()           # v1/v2 CNN, random weights
+
+    return GrooveStyleSelector.from_panns(
+        panns_ckpt,
+        head_weights=genre_head,
+        regression_head_weights=arousal_head,
+        mood_source=mood_source,
+    )
+
+
+def _style_from_audio(
+    audio_path: str,
+    *,
+    panns_ckpt: str,
+    genre_head: str,
+    arousal_head: str,
+    mood_source: str = "va",
+    allow_untrained: bool = False,
+) -> GrooveStyle:
+    import librosa
+
     y, sr = librosa.load(audio_path, sr=None, mono=True)
-    # v1/v2 CNN path; random weights are fine for visualisation since the
-    # table still produces a legal move from whatever soft-max comes out.
-    selector = GrooveStyleSelector()
+    selector = _build_selector(
+        panns_ckpt=panns_ckpt,
+        genre_head=genre_head,
+        arousal_head=arousal_head,
+        mood_source=mood_source,
+        allow_untrained=allow_untrained,
+    )
     style = selector.select(np.asarray(y, dtype=np.float32), int(sr))
     print(f"[render_groove] selector on {audio_path}: {style.as_text()}")
     return style
@@ -257,7 +354,14 @@ def _moves_to_render(args: argparse.Namespace) -> Iterable[tuple[str, GrooveStyl
             yield move, _forced_style(move, bpm=args.bpm, intensity=args.intensity)
         return
     if args.audio:
-        style = _style_from_audio(args.audio)
+        style = _style_from_audio(
+            args.audio,
+            panns_ckpt=getattr(args, "panns_ckpt", DEFAULT_PANNS_CKPT),
+            genre_head=getattr(args, "genre_head", DEFAULT_GENRE_HEAD),
+            arousal_head=getattr(args, "arousal_head", DEFAULT_AROUSAL_HEAD),
+            mood_source=getattr(args, "mood_source", "va"),
+            allow_untrained=getattr(args, "allow_untrained", False),
+        )
         yield Path(args.audio).stem, style
         return
     yield args.style, _forced_style(args.style, bpm=args.bpm, intensity=args.intensity)
@@ -292,6 +396,20 @@ def main():
                          "primary joint's peak angle.")
     ap.add_argument("--narrate-max-beats", type=int, default=None,
                     help="Cap the per-beat trace at N lines (verbose mode).")
+    # Trained-checkpoint paths for the --audio path. Missing files → loud
+    # INVALID stop unless --allow-untrained is set.
+    ap.add_argument("--panns-ckpt", default=DEFAULT_PANNS_CKPT,
+                    help="PANNs CNN14 backbone checkpoint (default: %(default)s).")
+    ap.add_argument("--genre-head", default=DEFAULT_GENRE_HEAD,
+                    help="Genre/mood TL head ckpt (default: %(default)s).")
+    ap.add_argument("--arousal-head", default=DEFAULT_AROUSAL_HEAD,
+                    help="Arousal/valence regression head ckpt (default: %(default)s).")
+    ap.add_argument("--mood-source", default="va", choices=["head", "va"],
+                    help="`va` (default) derives mood from learned A/V; "
+                         "`head` uses the MTG-trained mood head (off by default).")
+    ap.add_argument("--allow-untrained", action="store_true",
+                    help="Permit random-weight selector for --audio path. "
+                         "Without this flag, missing ckpts halt the run.")
     args = ap.parse_args()
     narrate_mode = "verbose" if args.verbose else ("on" if args.narrate else "off")
 
