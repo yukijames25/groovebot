@@ -1,5 +1,7 @@
 # GrooveBot
 
+*[Read in Japanese (日本語) 🇯🇵](./README_ja.md)*
+
 A cappella / humming → a robot that grooves *with* you, matching your tempo and
 tension. Built software-first: everything below runs with **no hardware** and on
 **free compute**. After lab assignment, you build the 10-DOF upper body to match
