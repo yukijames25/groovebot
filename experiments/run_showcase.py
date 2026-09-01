@@ -18,10 +18,16 @@ Default 4-clip set lives at `data/raw/showcase/` (gitignored). Each
 clip's outputs go to `data/renders/showcase/<stem>/`. See
 `data/renders/showcase/SOURCES.md` for clip provenance + licenses.
 
+`--view` selects the camera pose (see render_groove.VIEWS). It is a
+rendering-only knob, so every number in the summary table is identical
+across views. Non-default views write `<stem>_front.*` / `<stem>_3q.*`
+and never touch the side render.
+
 Usage:
     python -m experiments.run_showcase
     python -m experiments.run_showcase --clips data/raw/showcase/jp_uptempo.wav ...
     python -m experiments.run_showcase --seconds 8 --skip-render
+    python -m experiments.run_showcase --view front
 """
 from __future__ import annotations
 import argparse
@@ -38,8 +44,11 @@ from experiments.render_groove import (
     DEFAULT_AROUSAL_HEAD,
     DEFAULT_GENRE_HEAD,
     DEFAULT_PANNS_CKPT,
+    DEFAULT_VIEW,
+    VIEWS,
     _build_selector,
     render_one,
+    view_suffix,
 )
 from groovebot.style.narrate import narrate
 from groovebot.style.select import GrooveStyle
@@ -101,12 +110,14 @@ def run_one(
     seconds: float,
     rate: float,
     skip_render: bool,
+    view: str = DEFAULT_VIEW,
 ) -> dict:
     """Run the pipeline on one clip and return a comparison-row dict.
 
     Also writes (under `out_dir/<stem>/`):
-      - <stem>.gif   (if --skip-render not set, and MuJoCo Renderer works)
-      - <stem>.csv   (per-tick JointCommand.targets — always)
+      - <stem>[<view suffix>].gif  (if --skip-render not set, and the
+        MuJoCo Renderer works)
+      - <stem>[<view suffix>].csv  (per-tick JointCommand.targets — always)
       - narration.txt  (window summary + per-beat trace)
     """
     import librosa
@@ -142,6 +153,7 @@ def run_one(
         skip_render=skip_render,
         use_ctx_arousal=False,
         narrate_mode="off",
+        view=view,
     )
 
     # Write narration.txt (window summary + verbose beat trace, taken
@@ -246,6 +258,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--arousal-head", default=DEFAULT_AROUSAL_HEAD)
     ap.add_argument("--mood-source", default="va", choices=["head", "va"])
     ap.add_argument("--allow-untrained", action="store_true")
+    ap.add_argument("--view", default=DEFAULT_VIEW, choices=sorted(VIEWS),
+                    help="Camera pose (rendering only - every number in "
+                         "the summary is identical across views). "
+                         "Non-default views write <stem>_front / <stem>_3q "
+                         "and never overwrite the side render.")
     args = ap.parse_args(argv)
 
     out_dir = Path(args.out_dir)
@@ -276,11 +293,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         rows.append(run_one(
             clip_path=p, out_dir=out_dir, selector=selector,
             seconds=args.seconds, rate=args.rate,
-            skip_render=args.skip_render,
+            skip_render=args.skip_render, view=args.view,
         ))
 
     md_path = _write_summary_md(out_dir, rows)
     print(f"\n[showcase] summary written → {md_path}\n", flush=True)
+    print(f"[showcase] view={args.view} "
+          f"(suffix={view_suffix(args.view)!r})", flush=True)
     print(_format_markdown_table(rows), flush=True)
     return 0
 

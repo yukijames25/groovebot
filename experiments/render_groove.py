@@ -22,10 +22,28 @@ GIF of the resulting motion. Two modes:
 `--all-moves` renders every primitive in `MOVE_PRIMITIVES` to its own
 GIF — the canonical "primitive library at a glance" output.
 
+`--view` picks the MuJoCo free-camera pose. It is a *rendering-only*
+knob: perception, the table, `GrooveStyle` and every `JointCommand`
+value are computed before the camera is ever consulted, so the CSV is
+bit-identical across views.
+
+  * `side` (default) — azimuth 90 deg, the camera on the robot's right.
+    This is the historical view; it is passed through as MuJoCo's
+    `camera=-1` sentinel so existing output is reproduced exactly.
+    Best for `neck_pitch` moves (headbang / bob_nod nod in-plane).
+  * `front` — azimuth 180 deg, camera on +X looking back down -X, i.e.
+    facing the robot. Best for `shoulder_roll` moves (clap / fist_pump
+    sweep in-plane); nods foreshorten here.
+  * `threequarter` — azimuth 140 deg, front-right. Compromise that keeps
+    both the nod arc and the arm spread legible.
+
 Outputs (default `data/renders/`):
-  - `<tag>.gif` — animated frames at the control rate
-  - `<tag>.csv` — per-tick joint targets (always produced; safe even
-    when the GL renderer fails)
+  - `<tag>[<view-suffix>].gif` — animated frames at the control rate
+  - `<tag>[<view-suffix>].csv` — per-tick joint targets (always
+    produced; safe even when the GL renderer fails)
+
+The view suffix is `""` for side, `_front` for front and `_3q` for
+threequarter, so a non-default view never overwrites the side render.
 
 This script is a developer tool; pytest does not exercise rendering.
 The honest limit: MuJoCo renders kinematic playback. Real sim dynamics
@@ -36,6 +54,7 @@ Usage:
     python -m experiments.render_groove --all-moves --seconds 4
     python -m experiments.render_groove --style headbang --bpm 140 --seconds 6
     python -m experiments.render_groove --audio data/raw/clip.wav --seconds 8
+    python -m experiments.render_groove --style clap --view front
 """
 from __future__ import annotations
 import argparse
@@ -78,6 +97,105 @@ DEFAULT_AROUSAL_HEAD = os.path.join(
 )
 
 
+# ------------------------------------------------------------------ views
+#
+# Camera poses for the MuJoCo free camera. Rendering-only: none of this
+# touches perception, the table, `GrooveStyle` or `JointCommand`.
+#
+# URDF frame (robot/groovebot.urdf header): Z = up, X = forward, Y = left.
+# MuJoCo's free camera sits at `lookat - distance * f`, where
+#   f = (cos(el)cos(az), cos(el)sin(az), sin(el)).
+# So azimuth is measured from +X toward +Y, and the camera ends up on the
+# *opposite* side of `lookat` from f:
+#   az=90   -> camera at -Y = the robot's right  -> side view
+#   az=180  -> camera at +X, looking down -X     -> facing the robot
+#   az=140  -> camera front-right                -> three-quarter
+#
+# Which moves read well depends on the axis a joint rotates about:
+#   neck_pitch / torso_pitch / shoulder_pitch / elbow rotate about Y, so
+#   they sweep in-plane from the SIDE and foreshorten from the FRONT;
+#   shoulder_roll / torso_roll rotate about X, so they sweep in-plane
+#   from the FRONT and foreshorten from the SIDE. `threequarter` splits
+#   the difference. See the module docstring.
+
+@dataclass(frozen=True)
+class ViewSpec:
+    """One free-camera pose, plus the filename suffix it renders under.
+
+    `dist_scale` multiplies the model-derived default distance
+    (`mjv_defaultFreeCamera`, which sizes itself from `model.stat.extent`)
+    so the framing survives edits to the URDF. `lookat_z` overrides the
+    vertical centre of the frame; None keeps the model's own centre.
+
+    `use_model_default` marks the historical view: it is rendered via
+    MuJoCo's `camera=-1` sentinel rather than an explicit MjvCamera, so
+    the default path is byte-for-byte what it was before --view existed.
+    """
+    azimuth: float
+    elevation: float
+    dist_scale: float
+    lookat_z: float | None
+    suffix: str
+    use_model_default: bool = False
+
+
+VIEWS: dict[str, ViewSpec] = {
+    # Historical default. mjv_defaultFreeCamera on this URDF yields
+    # azimuth=90, elevation=-45, distance=0.851, lookat=(0,0,0.2228);
+    # recorded here for documentation, but `use_model_default` means we
+    # hand MuJoCo `camera=-1` and let it recompute them itself.
+    "side": ViewSpec(
+        azimuth=90.0, elevation=-45.0, dist_scale=1.0, lookat_z=None,
+        suffix="", use_model_default=True,
+    ),
+    # Head-on. Near-level elevation so the nod arc is not further
+    # flattened by a top-down tilt; 1.15x distance because clap throws
+    # the forearms out to |y| ~ 0.34 m, wider than the neutral pose.
+    "front": ViewSpec(
+        azimuth=180.0, elevation=-10.0, dist_scale=1.15, lookat_z=0.235,
+        suffix="_front",
+    ),
+    # Front-right 3/4. Tuned on a per-geom segmentation sweep (azimuth
+    # 140/145/150 x elevation -12/-18/-25) against two competing costs:
+    # the torso occluding the far forearm, and the nod flattening out.
+    # az=145/el=-12 keeps both forearms >=293 px visible through the
+    # whole clap cycle (side view drops one to 0 px, i.e. fully hidden)
+    # while retaining 83% of the side view's head-tilt silhouette cue.
+    "threequarter": ViewSpec(
+        azimuth=145.0, elevation=-12.0, dist_scale=1.15, lookat_z=0.235,
+        suffix="_3q",
+    ),
+}
+
+DEFAULT_VIEW = "side"
+
+
+def view_suffix(view: str) -> str:
+    """Filename suffix for `view` ('' for the default side view)."""
+    return VIEWS[view].suffix
+
+
+def _make_camera(model, view: str):
+    """Build an `MjvCamera` for `view`, or None to use MuJoCo's default.
+
+    None means "pass camera=-1", which is what the renderer did before
+    --view existed; that keeps the side view bit-identical.
+    """
+    spec = VIEWS[view]
+    if spec.use_model_default:
+        return None
+    import mujoco
+
+    cam = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(model, cam)
+    cam.azimuth = spec.azimuth
+    cam.elevation = spec.elevation
+    cam.distance = cam.distance * spec.dist_scale
+    if spec.lookat_z is not None:
+        cam.lookat[2] = spec.lookat_z
+    return cam
+
+
 # ----------------------------------------------------------- core runner
 
 @dataclass
@@ -86,6 +204,7 @@ class RenderResult:
     csv_path: Path
     gif_path: Path | None
     final_pose: dict[str, float]
+    view: str = DEFAULT_VIEW
 
 
 class _RecordingBackend:
@@ -97,16 +216,19 @@ class _RecordingBackend:
     """
 
     def __init__(self, inner: MujocoBackend, *, render: bool,
-                 width: int, height: int, every: int = 1):
+                 width: int, height: int, every: int = 1,
+                 view: str = DEFAULT_VIEW):
         self.inner = inner
         self.render = render
         self.width = width
         self.height = height
         self.every = max(1, int(every))
+        self.view = view
         self.commands: list[dict[str, float]] = []
         self.frames: list[np.ndarray] = []
         self._tick = 0
         self._renderer = None
+        self._camera = None
 
     def load(self, urdf_path: str) -> None:
         self.inner.load(urdf_path)
@@ -116,6 +238,7 @@ class _RecordingBackend:
                 self._renderer = mujoco.Renderer(
                     self.inner._m, height=self.height, width=self.width,
                 )
+                self._camera = _make_camera(self.inner._m, self.view)
             except Exception as exc:                              # pragma: no cover
                 print(f"[render_groove] disabling GIF: renderer init failed: {exc}")
                 self.render = False
@@ -130,7 +253,10 @@ class _RecordingBackend:
         if self.render and self._renderer is not None:
             if self._tick % self.every == 0:
                 try:
-                    self._renderer.update_scene(self.inner._d, camera=-1)
+                    self._renderer.update_scene(
+                        self.inner._d,
+                        camera=-1 if self._camera is None else self._camera,
+                    )
                     self.frames.append(self._renderer.render().copy())
                 except Exception as exc:                          # pragma: no cover
                     print(f"[render_groove] disabling GIF mid-run: {exc}")
@@ -188,11 +314,17 @@ def render_one(
     use_ctx_arousal: bool,
     narrate_mode: str = "off",
     narrate_max_beats: int | None = None,
+    view: str = DEFAULT_VIEW,
 ) -> RenderResult:
+    if view not in VIEWS:
+        raise ValueError(
+            f"unknown view {view!r}; choose from {sorted(VIEWS)}"
+        )
     backend = _RecordingBackend(
         MujocoBackend(),
         render=not skip_render,
         width=width, height=height,
+        view=view,
     )
     backend.load(URDF)
 
@@ -210,15 +342,17 @@ def render_one(
     )
     orch.run(seconds)
 
-    csv_path = outdir / f"{tag}.csv"
-    gif_path = outdir / f"{tag}.gif"
+    # Non-default views write beside the side render rather than over it.
+    suffix = view_suffix(view)
+    csv_path = outdir / f"{tag}{suffix}.csv"
+    gif_path = outdir / f"{tag}{suffix}.gif"
     _save_csv(backend.commands, csv_path)
     ok = _save_gif(backend.frames, gif_path, fps=rate)
     final = backend.get_joint_states()
     backend.close()
 
     print(
-        f"[render_groove] {tag}: "
+        f"[render_groove] {tag} [view={view}]: "
         f"{len(backend.commands)} ticks, "
         f"{'GIF=' + str(gif_path) if ok else 'GIF=skipped'}, "
         f"CSV={csv_path}"
@@ -235,7 +369,7 @@ def render_one(
         ))
     return RenderResult(tag=tag, csv_path=csv_path,
                         gif_path=gif_path if ok else None,
-                        final_pose=final)
+                        final_pose=final, view=view)
 
 
 # ----------------------------------------------------------- style builders
@@ -383,6 +517,12 @@ def main():
     ap.add_argument("--intensity", type=float, default=0.85)
     ap.add_argument("--use-ctx-arousal", action="store_true",
                     help="Multiply style.intensity by 0.5+0.5*ctx.arousal.")
+    ap.add_argument("--view", default=DEFAULT_VIEW, choices=sorted(VIEWS),
+                    help="Camera pose (rendering only; joint output is "
+                         "identical across views). side=robot's right "
+                         "(default, best for nods), front=head-on (best "
+                         "for arm sweeps), threequarter=front-right. "
+                         "Non-default views write <tag>_front / <tag>_3q.")
     ap.add_argument("--width", type=int, default=480)
     ap.add_argument("--height", type=int, default=360)
     ap.add_argument("--outdir", default=DEFAULT_OUTDIR)
@@ -429,6 +569,7 @@ def main():
             use_ctx_arousal=args.use_ctx_arousal,
             narrate_mode=narrate_mode,
             narrate_max_beats=args.narrate_max_beats,
+            view=args.view,
         )
 
 
