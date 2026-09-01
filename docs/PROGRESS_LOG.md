@@ -102,12 +102,103 @@
 - よって**この数字は手法の判定ではない**。Amazing Graceの最適化はここで打ち切り。
 - この回り道の本当の収穫は、**評価ランナーが方法論的に堅牢化した**こと（GT非参照アンカー、bandオプション、スパース非対称の知見、テストリーク回避の規律）。
 
-## 現在地と今後
+### （この時点でのTIMINGスナップショット）
 
-- **代表値の判定はテンポ安定なポップ楽曲（DAMP-VSEP）でしか出ない** → 現在アクセス許諾待ち（クリティカルパス）。
-- 待機中の高価値タスク候補: 真の鼻歌を MIR-QBSH（実ハミング＋MIDI参照, 旋律アライメント指標）で攻める。
-- **M2**（オンライン整合＋Orchestrator接続）と **M3**（構造条件付け学習生成）は、Tier 2 の科学的検証が通ってから着手。「科学を工学より先に」の順序は崩さない。
+- 代表値の判定はテンポ安定なポップ楽曲（DAMP-VSEP）でしか出ない → アクセス許諾待ち。
+- テスト推移はここまでで 91 → 103 → 127 → 142 → 173 passed。公開IFは不変。
+- この後、TIMING を PARK して STYLE ブランチへ展開する（Phase 7 以降）。最新の現在地・テスト推移は末尾にまとめ直している。
 
-## テスト推移
+---
 
-評価・実装の各段階で自動テストを拡充：91 → 103 → 127 → 142 → 173 passed。公開IF（`GrooveContext` / `JointCommand` / `RobotBackend`）は全期間を通じて不変。
+## Phase 7 — TIMING ブランチの整理と PARK 判断
+
+DAMP-VSEP のアクセス許諾が長期に渡り保留のため、代表値判定（Tier 2）はブロック。ここで「日本語歌唱データを大量に集めて埋める」案を検討したが、**J-popは世界でも著作権が最も厳しい領域**であり、既知曲の歌唱サンプル収集は法的にも、GT拍の付与の面でも二重に重い。Tier 1 で機構は検証済みである以上、**timing は健全にPARK**し、エネルギーを STYLE ブランチに振る判断をした（無駄な大規模収集はしない）。
+
+> 教訓: 「データが無いから集める」の前に、「今それが本当に必要か」「他の軸で前進できないか」を問う。
+
+## Phase 8 — STYLE ブランチ始動：GrooveStyleSelector の設計
+
+「どう動くか」を学習で解く方針を立てるにあたり、**何を学習し、何を学習しないか**を最初に確定した。
+
+- **学習対象は audio → 属性（genre 分類 / arousal・valence 回帰）のみ**。
+- **属性 → グルーヴ style + intensity は人手のテーブル**（genre × arousalバケット × mood）。これは設計判断であって学習対象ではない。
+- ロボット実現可能な出力 ≈ 上半身8クラス（headbang / bob_nod / sway / front-back rock / fist_pump / clap[2&4] / penlight_wave / quiet_listen）。
+- mood = 6感情クラス {aggressive, happy, sad, calm, dark, epic}、テーブル内では**ソフト確率**として使用（argmaxしない）。
+- 教師データは**著作権の重いライブ映像ではなくCCの音楽タグ付けデータ**で済む設計。RLではなく分類＋回帰。
+
+> 「NNが勝手に解く」のではなく「何を教師信号にするか」が本質、という理解に立つ。Shimada Lab の画像認識→ロボット動作（DL知覚→行動）の構図と相似。
+
+## Phase 9 — genre：from-scratch → 転移学習
+
+- **v2 from-scratch StyleCNN**（GTZAN fault-split, 443/197/290）: fault test 0.431 / naive 0.573（リーク由来バイアス +14pt）/ pop-sink / 過学習ギャップ +0.22。
+- **v3 転移学習**: 凍結 **PANNs CNN14**（panns_inference, Zenodo 3987831）→ MLPヘッド。**fault test 0.431 → 0.817（+38.6pt）**、過学習ギャップ +0.03、pop-sink解消。
+- 正直な但し書き: PANNs の AudioSet 事前学習が GTZAN/Jamendo と分布的に重なるため、純粋な手法利得ではない。**用途に対し十分（82%）と判断しクローズ**。
+
+## Phase 10 — mood / arousal / valence：実データで学習・検証
+
+- **mood（MTG-Jamendo autotagging_moodtheme, 18,486曲/57タグ, CC）**: 59タグ→6クラスへ写像、theme/曖昧タグは drop。test 0.350（1.75×chance）、calm-sink、calm↔sad の強い混同（valenceは音響から本質的に難しい）。
+- **arousal/valence（DEAM, 1,802曲, V/A連続, CC BY-NC）**: 凍結PANNs → 回帰ヘッド。**arousal R²=0.522 / r=0.723**（文献≈0.6）、**valence R²=0.451 / r=0.675**（文献≈0.4を上回る）。
+- 重要な比較: **既存ヒューリスティックの arousal は DEAM真値に対し r=0.422（説明分散≈18%）＋ +0.16 の過大評価バイアス**。学習ヘッドは +34pt R²。→ **学習ヘッドを既定化**（PANNs無し環境のみヒューリスティックにフォールバック）。
+
+## Phase 11 — affect 統合と mood の出所整理
+
+- 学習した DEAM arousal/valence を**既定**に昇格（ヒューリスティックは厳格な no-PANNs フォールバック）。
+- `mood_from_va.py`: V/A circumplex の4象限（happy / aggressive / calm / sad）をクリーンに導出。epic / dark は純V/Aで表せないため既定オフ。
+- mood_source を {head, va} で切替可能に。MTG mood ヘッドより V/A 由来が安定と判断。
+
+## Phase 12 — JointCommand ブリッジとナレーター、拍位相規約の確定
+
+- `StyleGrooveGenerator` ＋ 8種 MOVE_PRIMITIVES ＋ `render_groove.py`（MuJoCo→GIF＋CSV）。GrooveStyleSelector → Orchestrator → generator → MuJoCoBackend を結線。拍源は当面 tempo BPM 種のメトロノーム（M2 で ReferenceAligner に差し替え予定）。
+- **ナレーター（`narrate.py`）**: perception→decision→action のウィンドウ要約＋拍ごとトレース。制御パス外・観測専用の純関数。
+- 導入直後に **headbang が拍からずれて頂点を迎えるバグ（b+0.48）を即検出**。観測可能性が即座に価値を出した好例。
+- 修正後、**拍位相の契約を確定**：accent（headbang/bob_nod/fist_pump）は毎拍頂点 (1+cos2πb)/2、clap は 2&4 バックビート、continuous（sway/rock/penlight_wave）は拍でゼロ・半拍で最大 sin(πb)、quiet_listen は呼吸のみ。ナレーターが全て確認。
+
+## Phase 13 — end-to-end ショーケースと、affect 較正（最新の山場）
+
+end-to-endショーケースを実装：訓練済みckpt（genre / DEAM arousal・valence）を `render_groove --audio` に正式接続（ckpt欠落時は `INVALID` で停止、ランダム重みで黙って続行しない安全弁つき）。**西洋2本＋CC日本語2本**（魔王魂, 規約: 商用/改変/再配布OK）を全パイプラインに通し GIF＋ナレーション＋比較表を生成。
+
+**初回ショーケースが部品テストをすり抜けた潜在バグを捕捉**：
+- 回帰ヘッドの**平均回帰**で arousal 出力が中央（[0.42, 0.64]）に圧縮。
+- 絶対閾値 0.33/0.66（生0..1スケール前提）に対し**4クリップ全部が mid バケットに沈没** → `_AROUSAL_NUDGE` が空 → テーブルキーが実質「genre×mood」だけに。
+- pop-family の clap-prior が支配し、**日本語2本が両方 clap に収斂**（多様性損失）。
+- ただし**styleは壊れず**（defensive-design が legal な style を出し続けた）。
+
+**較正（テストリーク厳禁の原理的手法）**:
+- 新規 `tools/calibrate_affect.py`。境界は **DEAM val プール（n=270, seed=0, ショーケース4本は一切含まない held-out）** の実ヘッド出力分布から導出。
+- arousal 三分位境界: **low<0.410 / mid[0.410,0.529) / high≥0.529**（各バケット90曲, tertile完全）。絶対値 0.33/0.66 を廃止。
+- `groovebot/style/affect_calibration.json` を**単一の出所**化（schema/source/n/date メタ込み）。`attributes.py` と `mood_from_va.py` が読込、欠如時 0.33/0.66 にフォールバック。
+- mood_from_va の neutral 中心を予測中央値（arousal 0.473 / valence 0.484）に再センタリング。
+
+**再走結果（held-out 観察）**:
+
+| clip | lang | genre | arousal(値→bucket) | style | intensity | dominant move |
+|---|---|---|---|---|---|---|
+| western_metal | en | metal (0.62) | 0.63 → high | headbang | 0.62→**0.93** | headbang |
+| western_classical | en | classical (0.87) | 0.49 → mid | quiet_listen | 0.59 | quiet_listen |
+| jp_uptempo | ja | pop (0.43) | 0.64 → **high** | clap | 0.61→**0.92** | clap |
+| jp_ballad | ja | pop (0.36) | 0.42 → mid | clap | 0.57 | clap |
+
+- **arousal が日本語2本で割れた**（high / mid, 較正前は両方 mid）。**intensity が 0.92 vs 0.57 と明確分離**（較正前 0.61/0.56）。本丸の改善。
+- 西洋2本は genre 高信頼が支配し妥当（metal→headbang, classical→quiet）。
+- jp_uptempo の clap は **117BPM陽気popには妥当**（headbangに矯正しない判断）。jp_ballad の clap はやや惜しいが style は壊れず＝許容、手当て不要。
+
+**この較正の副産物が本命の問いへの答え**：
+> **「日本語楽曲に対応するのに再学習は不要、必要だったのは較正」** を実データで確認。arousal は言語非依存に妥当な値を返す。PANNs バックボーンは AudioSet 由来で多文化、偏りは genre ヘッドのラベル側に限局。日本語クリップは「学習が要る証拠」ではなく「**較正バグを見つけるセンサー**」として機能した（テストファースト戦略の勝ち）。
+
+**正直な限界（過剰解釈の戒め）**:
+- バケットは**境界付近で不安定**（jp_ballad 0.42 は low境界 0.410 のわずか上、次の学習runで容易にflip）。平均回帰自体（std≈0.12）は較正では治らず、将来は spread loss か連続intensity ramp で対処。
+- genre の pop-sink（J-music未学習）は残存。styleは壊れないので手当て不要だが、**move の真の多様化には genre の J-music 学習か M3 学習生成が必要**（較正のスコープ外）。
+
+## テスト推移（続き）
+
+173 → … → 396（JointCommandブリッジ）→ 421（ナレーター）→ 432（位相規約）→ **433 passed / 2 skipped**（affect較正のフォールバック経路テスト +1）。公開IF（`GrooveContext` / `JointCommand` / `RobotBackend`）は全期間を通じて不変。
+
+## 現在地と今後（更新）
+
+- **STYLE = v1完成**: audio→属性（genre 82% / arousal r=0.72 / affect=DEAM）→テーブル→拍位相つきプリミティブ→JointCommand→MuJoCo→ナレーション。affect較正済み、日本語汎化を arousal/intensity 軸で実証。
+- **TIMING = PARKED**: Tier 1 機構検証済み、Tier 2 代表値は DAMP-VSEP アクセス待ち。
+- **M2**: オンライン整合＋Orchestrator接続（Tier 2 検証後）。
+- **M3**: 学習グルーヴ生成（VQ-VAE codebook 等, 手作りプリミティブ置換, AIST++/GPU想定）。pop-sink由来の move 多様化はここで本質解決。
+- 任意の後始末: mood の calm/sad 統合（"mellow"）、class-weighted CE、MTG追加アーカイブ等。
+
+> Commits: 69aed53（affect較正/JSON単一出所）, 85321f2（end-to-endショーケース）, ac54d3b（CLAUDE.md pin）。origin/master 552177b..ac54d3b。
