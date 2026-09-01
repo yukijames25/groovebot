@@ -222,12 +222,13 @@ def test_front_and_side_render_different_pixels():
 
 # ------------------------------------------------------ run_showcase wiring
 
-def test_run_showcase_exposes_a_view_flag():
+def test_run_showcase_exposes_view_and_force_summary_flags():
     rs = pytest.importorskip("experiments.run_showcase")
     import inspect
 
     src = inspect.getsource(rs.main)
     assert '"--view"' in src
+    assert '"--force-summary"' in src
 
 
 def test_run_showcase_run_one_takes_a_view():
@@ -237,6 +238,28 @@ def test_run_showcase_run_one_takes_a_view():
     params = inspect.signature(rs.run_one).parameters
     assert "view" in params
     assert params["view"].default == "side"
+
+
+def test_summary_writer_refuses_to_clobber_by_default(tmp_path):
+    """showcase_summary.md holds hand-written analysis below the table."""
+    rs = pytest.importorskip("experiments.run_showcase")
+
+    rows = [{
+        "clip": "c", "lang": "en", "genre": "rock (0.90)", "arousal": "0.60",
+        "valence": "0.50", "mood": "happy (0.40)", "style_move": "headbang",
+        "intensity": "0.90", "dominant_move": "headbang",
+        "accent_phase": "on-beat", "tempo_bpm": "120", "arousal_bucket": "high",
+    }]
+    path = tmp_path / "showcase_summary.md"
+    hand_written = "# mine\n\nhand-written analysis that must survive\n"
+    path.write_text(hand_written, encoding="utf-8")
+
+    assert rs._write_summary_md(tmp_path, rows) is None
+    assert path.read_text(encoding="utf-8") == hand_written
+
+    # ...but an explicit force still regenerates it.
+    assert rs._write_summary_md(tmp_path, rows, force=True) == path
+    assert "hand-written analysis" not in path.read_text(encoding="utf-8")
 
 
 def test_summary_writer_creates_the_file_when_absent(tmp_path):

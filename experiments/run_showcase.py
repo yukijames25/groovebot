@@ -23,6 +23,13 @@ rendering-only knob, so every number in the summary table is identical
 across views. Non-default views write `<stem>_front.*` / `<stem>_3q.*`
 and never touch the side render.
 
+Overwrite policy: `narration.txt` and `showcase_summary.md` are
+view-independent, and `showcase_summary.md` carries hand-written
+analysis appended after the generated section. Both are therefore
+written only when absent; an existing file is compared against the
+freshly computed content and left alone. Pass `--force-summary` to
+deliberately regenerate the summary (this DROPS hand-written sections).
+
 Usage:
     python -m experiments.run_showcase
     python -m experiments.run_showcase --clips data/raw/showcase/jp_uptempo.wav ...
@@ -118,7 +125,8 @@ def run_one(
       - <stem>[<view suffix>].gif  (if --skip-render not set, and the
         MuJoCo Renderer works)
       - <stem>[<view suffix>].csv  (per-tick JointCommand.targets — always)
-      - narration.txt  (window summary + per-beat trace)
+      - narration.txt  (window summary + per-beat trace; written only if
+        absent, since it does not depend on the camera)
     """
     import librosa
 
@@ -170,8 +178,28 @@ def run_one(
     narration = narrate(
         style, commands, rate=rate, seconds=seconds,
         verbose=True, max_beats=None,
-    )
-    (clip_out / "narration.txt").write_text(narration + "\n", encoding="utf-8")
+    ) + "\n"
+    narr_path = clip_out / "narration.txt"
+    if not narr_path.exists():
+        narr_path.write_text(narration, encoding="utf-8")
+        print(f"[showcase] wrote {narr_path}", flush=True)
+    else:
+        # Narration derives from the style + the joint targets, neither of
+        # which the camera touches, so a re-run under a different view must
+        # reproduce it byte for byte. Verify rather than overwrite.
+        existing = narr_path.read_text(encoding="utf-8")
+        if existing == narration:
+            print("[showcase] narration.txt byte-identical "
+                  "(view-independent) OK", flush=True)
+        else:
+            alt = clip_out / f"narration.{view}.txt"
+            alt.write_text(narration, encoding="utf-8")
+            print(
+                f"[showcase] WARNING: narration differs from the existing "
+                f"{narr_path.name}; kept the original and wrote the new "
+                f"one to {alt.name}",
+                file=sys.stderr, flush=True,
+            )
 
     top_genre, top_genre_p = _top_prob(style.genre_probs)
     top_mood, top_mood_p = _top_prob(style.mood_probs)
@@ -212,7 +240,16 @@ def _format_markdown_table(rows: list[dict]) -> str:
     return "\n".join([head, sep, *body])
 
 
-def _write_summary_md(out_dir: Path, rows: list[dict]) -> Path:
+def _write_summary_md(out_dir: Path, rows: list[dict], *,
+                      force: bool = False) -> Path | None:
+    """Write showcase_summary.md, refusing to clobber an existing one.
+
+    The committed summary carries hand-written analysis appended after
+    the generated section, and the generated table itself is
+    view-independent, so a re-render under a new camera has nothing to
+    add. Returns the path written, or None when an existing file was
+    deliberately left alone.
+    """
     path = out_dir / "showcase_summary.md"
     parts = [
         "# Showcase summary",
@@ -236,7 +273,16 @@ def _write_summary_md(out_dir: Path, rows: list[dict]) -> Path:
             f"accent phase **{r['accent_phase']}**",
             "",
         ]
-    path.write_text("\n".join(parts) + "\n", encoding="utf-8")
+    body = "\n".join(parts) + "\n"
+    if path.exists() and not force:
+        print(
+            f"[showcase] {path.name} already exists - left untouched "
+            f"(it holds hand-written analysis, and the generated table is "
+            f"view-independent). Pass --force-summary to regenerate.",
+            flush=True,
+        )
+        return None
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -263,6 +309,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "the summary is identical across views). "
                          "Non-default views write <stem>_front / <stem>_3q "
                          "and never overwrite the side render.")
+    ap.add_argument("--force-summary", action="store_true",
+                    help="Regenerate showcase_summary.md even if it exists. "
+                         "WARNING: drops any hand-written sections.")
     args = ap.parse_args(argv)
 
     out_dir = Path(args.out_dir)
@@ -296,8 +345,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             skip_render=args.skip_render, view=args.view,
         ))
 
-    md_path = _write_summary_md(out_dir, rows)
-    print(f"\n[showcase] summary written → {md_path}\n", flush=True)
+    md_path = _write_summary_md(out_dir, rows, force=args.force_summary)
+    if md_path is not None:
+        print(f"\n[showcase] summary written → {md_path}\n", flush=True)
     print(f"[showcase] view={args.view} "
           f"(suffix={view_suffix(args.view)!r})", flush=True)
     print(_format_markdown_table(rows), flush=True)
