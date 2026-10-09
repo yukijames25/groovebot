@@ -121,6 +121,7 @@ class GrooveStyleSelector:
         valence_fn: ValenceFn | None = None,
         mood_source: MoodSource = "head",
         mood_va_prototypes: Mapping[str, MoodPrototype] = DEFAULT_QUADRANT_PROTOTYPES,
+        arousal_mode: Literal["bucket", "continuous"] = "bucket",
         target_sr: int = DEFAULT_SR,
         n_mels: int = DEFAULT_N_MELS,
         device: str | torch.device | None = None,
@@ -128,12 +129,28 @@ class GrooveStyleSelector:
         """`regression_head` co-wires DEAM-learned arousal + valence
         as the default (heuristic stays as fallback when PANNs is
         unavailable). Explicit `arousal_fn` / `valence_fn` override.
-        See module docstring for the full source policy."""
+        See module docstring for the full source policy.
+
+        `arousal_mode` picks the `table.select_move` arousal routing:
+        'bucket' (default, legacy step-function on tertile boundaries)
+        or 'continuous' (piecewise-linear blend across tertile midpoints
+        — fixes the boundary brittleness documented in the robustness
+        experiment, at the cost of a slightly different move surface for
+        clips sitting between the anchor points). The two modes agree
+        exactly whenever arousal equals an anchor; see
+        `_continuous_arousal_weights` in `table.py` for the contract.
+        """
         self.target_sr = int(target_sr)
         self.n_mels = int(n_mels)
         self.device = torch.device(device) if device is not None else torch.device("cpu")
         self.mood_source: MoodSource = mood_source
         self.mood_va_prototypes = dict(mood_va_prototypes)
+        if arousal_mode not in ("bucket", "continuous"):
+            raise ValueError(
+                f"arousal_mode must be 'bucket' or 'continuous', "
+                f"got {arousal_mode!r}"
+            )
+        self.arousal_mode = arousal_mode
 
         if backbone is not None or head is not None:
             if backbone is None or head is None:
@@ -301,7 +318,10 @@ class GrooveStyleSelector:
         mood_argmax = max(mood_probs, key=mood_probs.get)
         tempo_bpm = estimate_tempo(audio, sr)
         bucket = arousal_bucket(arousal_val)
-        move, intensity = select_move(genre, bucket, mood_probs)
+        move, intensity = select_move(
+            genre, bucket, mood_probs,
+            arousal=arousal_val, mode=self.arousal_mode,
+        )
         return GrooveStyle(
             move=move,
             intensity=intensity,

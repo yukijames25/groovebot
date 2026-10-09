@@ -118,15 +118,21 @@ def run_one(
     rate: float,
     skip_render: bool,
     view: str = DEFAULT_VIEW,
+    arousal_mode: str = "bucket",
 ) -> dict:
     """Run the pipeline on one clip and return a comparison-row dict.
 
     Also writes (under `out_dir/<stem>/`):
-      - <stem>[<view suffix>].gif  (if --skip-render not set, and the
-        MuJoCo Renderer works)
-      - <stem>[<view suffix>].csv  (per-tick JointCommand.targets — always)
-      - narration.txt  (window summary + per-beat trace; written only if
-        absent, since it does not depend on the camera)
+      - <stem>[_cont][<view suffix>].gif  (if --skip-render not set, and
+        the MuJoCo Renderer works)
+      - <stem>[_cont][<view suffix>].csv  (per-tick JointCommand.targets
+        — always)
+      - narration[_cont].txt  (window summary + per-beat trace; written
+        only if absent, since it does not depend on the camera)
+
+    The `_cont` infix is added when `arousal_mode="continuous"` so the
+    continuous run never overwrites the bucket-mode artefacts side-by-
+    side. The bucket-mode default stays untouched.
     """
     import librosa
 
@@ -149,13 +155,18 @@ def run_one(
     clip_out = out_dir / stem
     clip_out.mkdir(parents=True, exist_ok=True)
 
+    # Mode-aware suffix: continuous-mode outputs land next to the
+    # bucket-mode ones with a `_cont` infix on every filename.
+    mode_suffix = "_cont" if arousal_mode == "continuous" else ""
+    tag = stem + mode_suffix
+
     # Render (also captures per-tick CSV).
     res = render_one(
         style=style,
         seconds=seconds,
         rate=rate,
         outdir=clip_out,
-        tag=stem,
+        tag=tag,
         width=480,
         height=360,
         skip_render=skip_render,
@@ -179,7 +190,8 @@ def run_one(
         style, commands, rate=rate, seconds=seconds,
         verbose=True, max_beats=None,
     ) + "\n"
-    narr_path = clip_out / "narration.txt"
+    narration_name = f"narration{mode_suffix}.txt"
+    narr_path = clip_out / narration_name
     if not narr_path.exists():
         narr_path.write_text(narration, encoding="utf-8")
         print(f"[showcase] wrote {narr_path}", flush=True)
@@ -189,10 +201,10 @@ def run_one(
         # reproduce it byte for byte. Verify rather than overwrite.
         existing = narr_path.read_text(encoding="utf-8")
         if existing == narration:
-            print("[showcase] narration.txt byte-identical "
+            print(f"[showcase] {narration_name} byte-identical "
                   "(view-independent) OK", flush=True)
         else:
-            alt = clip_out / f"narration.{view}.txt"
+            alt = clip_out / f"narration{mode_suffix}.{view}.txt"
             alt.write_text(narration, encoding="utf-8")
             print(
                 f"[showcase] WARNING: narration differs from the existing "
@@ -241,16 +253,22 @@ def _format_markdown_table(rows: list[dict]) -> str:
 
 
 def _write_summary_md(out_dir: Path, rows: list[dict], *,
-                      force: bool = False) -> Path | None:
-    """Write showcase_summary.md, refusing to clobber an existing one.
+                      force: bool = False,
+                      arousal_mode: str = "bucket") -> Path | None:
+    """Write showcase_summary[_cont].md, refusing to clobber an existing one.
 
     The committed summary carries hand-written analysis appended after
     the generated section, and the generated table itself is
     view-independent, so a re-render under a new camera has nothing to
     add. Returns the path written, or None when an existing file was
     deliberately left alone.
+
+    `arousal_mode="continuous"` writes to `showcase_summary_cont.md` so
+    the two modes' summaries live side-by-side.
     """
-    path = out_dir / "showcase_summary.md"
+    name = "showcase_summary_cont.md" if arousal_mode == "continuous" \
+           else "showcase_summary.md"
+    path = out_dir / name
     parts = [
         "# Showcase summary",
         "",
@@ -309,6 +327,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "the summary is identical across views). "
                          "Non-default views write <stem>_front / <stem>_3q "
                          "and never overwrite the side render.")
+    ap.add_argument("--arousal-mode", default="bucket",
+                    choices=["bucket", "continuous"],
+                    help="Arousal routing on the selector. 'bucket' "
+                         "(default) is the legacy step-function; "
+                         "'continuous' blends tertile anchors linearly "
+                         "(see groovebot/style/table.py). Continuous mode "
+                         "adds '_cont' to every output filename so the "
+                         "two modes never overwrite each other.")
     ap.add_argument("--force-summary", action="store_true",
                     help="Regenerate showcase_summary.md even if it exists. "
                          "WARNING: drops any hand-written sections.")
@@ -335,6 +361,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         arousal_head=args.arousal_head,
         mood_source=args.mood_source,
         allow_untrained=args.allow_untrained,
+        arousal_mode=args.arousal_mode,
     )
 
     rows = []
@@ -343,13 +370,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             clip_path=p, out_dir=out_dir, selector=selector,
             seconds=args.seconds, rate=args.rate,
             skip_render=args.skip_render, view=args.view,
+            arousal_mode=args.arousal_mode,
         ))
 
-    md_path = _write_summary_md(out_dir, rows, force=args.force_summary)
+    md_path = _write_summary_md(
+        out_dir, rows,
+        force=args.force_summary, arousal_mode=args.arousal_mode,
+    )
     if md_path is not None:
         print(f"\n[showcase] summary written → {md_path}\n", flush=True)
+    mode_suffix = "_cont" if args.arousal_mode == "continuous" else ""
     print(f"[showcase] view={args.view} "
-          f"(suffix={view_suffix(args.view)!r})", flush=True)
+          f"(suffix={view_suffix(args.view)!r})  "
+          f"arousal_mode={args.arousal_mode} (suffix={mode_suffix!r})",
+          flush=True)
     print(_format_markdown_table(rows), flush=True)
     return 0
 

@@ -395,6 +395,7 @@ def _build_selector(
     arousal_head: str,
     mood_source: str = "va",
     allow_untrained: bool = False,
+    arousal_mode: str = "bucket",
 ):
     """Build a `GrooveStyleSelector` for the showcase pipeline.
 
@@ -406,6 +407,11 @@ def _build_selector(
     Pass `allow_untrained=True` for a smoke-test path with random
     weights (selector still emits legal output, but genre / arousal
     numbers are meaningless).
+
+    `arousal_mode` picks the arousal routing on the selector:
+    "bucket" (default, legacy step-function on tertile boundaries) or
+    "continuous" (piecewise-linear blend across tertile midpoints — see
+    `groovebot/style/table.py` for the contract).
     """
     from groovebot.style.select import GrooveStyleSelector
 
@@ -453,6 +459,7 @@ def _build_selector(
         head_weights=genre_head,
         regression_head_weights=arousal_head,
         mood_source=mood_source,
+        arousal_mode=arousal_mode,
     )
 
 
