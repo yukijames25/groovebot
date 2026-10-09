@@ -27,11 +27,16 @@ def test_classical_low_calm_picks_quiet_listen():
     assert intensity < 0.3  # low arousal × calm shrink
 
 
-def test_pop_mid_happy_picks_clap_or_penlight():
+def test_pop_mid_happy_picks_a_party_gesture():
+    # Post-clap-retirement (2026-10-11), happy pop in the mid bucket
+    # should land on one of the party / idol gestures: penlight_wave
+    # (the clap successor as the dominant happy-mood pref) or arm_swing
+    # (the unilateral idol reach) or bob_nod (the beat-emphasis
+    # substitute). All three were targets of the clap redistribution.
     mood = {"aggressive": 0.0, "happy": 1.0, "sad": 0.0,
             "calm": 0.0, "dark": 0.0, "epic": 0.0}
     move, _ = select_move("pop", "mid", mood)
-    assert move in {"clap", "penlight_wave", "bob_nod"}
+    assert move in {"penlight_wave", "bob_nod", "arm_swing"}
 
 
 def test_soft_mood_weighting_is_not_argmax():

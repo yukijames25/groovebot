@@ -39,9 +39,18 @@ PRIMARY_JOINTS: dict[str, list[str]] = {
     "bob_nod":       ["neck_pitch"],
     "sway":          ["torso_roll"],
     "rock":          ["torso_pitch"],
-    "fist_pump":     ["l_shoulder_pitch", "r_shoulder_pitch"],
-    "clap":          ["l_shoulder_roll", "r_shoulder_roll", "l_elbow", "r_elbow"],
-    "penlight_wave": ["l_shoulder_pitch", "l_shoulder_roll"],
+    # fist_pump (rewrite 2026-10-01): shoulder_pitch pulses on the beat
+    # (max |value| coincides with the thrust) so the narration labels
+    # correctly as on-beat. The elbow extension and overhead roll are
+    # described in MOVE_DESCRIPTOR.
+    "fist_pump":     ["l_shoulder_pitch", "r_shoulder_pitch", "l_elbow", "r_elbow"],
+    # penlight_wave (rewrite 2026-10-01): the wave motion is in
+    # torso_roll + neck_yaw (continuous sin πb); the arms are held
+    # overhead with fixed shoulder_roll. Primary = the lateral wave.
+    "penlight_wave": ["torso_roll", "neck_yaw", "l_shoulder_roll", "r_shoulder_roll"],
+    # arm_swing (2026-10-11): right shoulder_pitch oscillates (rest +0.30
+    # → peak -0.60); peaks |value| on the beat, correctly labelled.
+    "arm_swing":     ["r_shoulder_pitch", "r_shoulder_roll", "r_elbow"],
     "quiet_listen":  ["neck_pitch"],
 }
 
@@ -53,8 +62,8 @@ CYCLE_BEATS: dict[str, float] = {
     "sway":          2.0,
     "rock":          2.0,
     "fist_pump":     1.0,
-    "clap":          1.0,
     "penlight_wave": 2.0,
+    "arm_swing":     1.0,
     "quiet_listen":  4.0,
 }
 
@@ -63,9 +72,9 @@ MOVE_DESCRIPTOR: dict[str, str] = {
     "bob_nod":       "首pitch（軽い頷き）",
     "sway":          "体幹roll（左右揺れ）",
     "rock":          "体幹pitch（前後揺れ）",
-    "fist_pump":     "両肩pitch+肘屈曲（拳上げ）",
-    "clap":          "両肩roll+肘屈曲（手拍子）",
-    "penlight_wave": "左肩pitch+roll（ペンライト）",
+    "fist_pump":     "両腕頭上・肘伸展（拳突き上げ）",
+    "penlight_wave": "両腕頭上・体幹roll（ペンライト左右）",
+    "arm_swing":     "右腕頭上・肩pitch前後振り（片腕スイング）",
     "quiet_listen":  "首pitch（呼吸）",
 }
 

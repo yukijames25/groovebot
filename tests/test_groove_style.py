@@ -143,19 +143,36 @@ def test_primitive_outputs_respect_soft_amp(move):
 
 
 @pytest.mark.parametrize("move", list(MOVE_PRIMITIVES.keys()))
-def test_primitive_at_zero_intensity_returns_zero(move):
+def test_primitive_at_zero_intensity_has_no_oscillation(move):
+    """At i=0 the oscillation terms must vanish — same joint value at
+    every beat position within the cycle.
+
+    Weaker than the pre-2026-10-14 invariant ("every joint is exactly
+    zero at i=0"): the arm-driving primitives were split into a base
+    pose (NOT scaled by i) and an oscillation (scaled by i). The base
+    pose has to persist at i=0 so that even low-intensity picks still
+    read as "arms overhead" — otherwise penlight_wave at jp_ballad's
+    intensity 0.51 collapsed the arms to half-raised, which was the
+    whole pathology this refactor exists to fix.
+
+    quiet_listen still gets a tiny floor (|value| <= 0.01) because
+    "totally still robot looks broken on stage" — original rationale
+    unchanged.
+    """
     prim = MOVE_PRIMITIVES[move]
-    # All primitives use intensity as a multiplicative amplitude factor.
-    # quiet_listen is the one exception: it floors at i=0.1 because a
-    # "totally still" robot looks broken on stage, so it still produces
-    # a breathing motion <= 0.005 rad.
-    for b in (0.0, 0.5, 1.0, 1.5):
-        out = prim(float(b), 0.0)
-        for name, v in out.items():
-            if move == "quiet_listen":
-                assert abs(v) <= 0.01
-            else:
-                assert v == pytest.approx(0.0, abs=1e-9)
+    # Sample across a full cycle (and past it so a 1-beat or 2-beat
+    # move both see the full phase sweep).
+    outs = [prim(float(b), 0.0) for b in (0.0, 0.3, 0.5, 0.7, 1.0, 1.3)]
+    joints = outs[0].keys()
+    for jn in joints:
+        values = [o.get(jn, 0.0) for o in outs]
+        if move == "quiet_listen":
+            # Floor contribution — small but non-zero.
+            assert max(abs(v) for v in values) <= 0.01, (jn, values)
+        else:
+            # Oscillation must be dead → the joint reports the same value
+            # across the whole cycle. Base pose can be any constant.
+            assert max(values) - min(values) < 1e-9, (move, jn, values)
 
 
 # ------------------------------------------------ arousal monotonicity
@@ -222,41 +239,66 @@ def test_bob_nod_peak_lands_on_every_beat():
 
 
 def test_fist_pump_peak_lands_on_every_beat():
-    # Arms highest (sh_pitch most negative = pitched-up) ON the beat,
-    # elbow most flexed ON the beat. At half-beat we're at rest.
+    # v1.2 phase contract: accent-category primitive, 1-beat cycle, peak
+    # at every integer beat. The rewrite (2026-10-01) drives the thrust
+    # through elbow extension (bent at rest -> straight at peak) with
+    # a fixed overhead shoulder_roll, so the invariants pinned here are
+    # (a) elbow more extended ON than OFF, (b) left/right symmetry,
+    # (c) shoulder_roll overhead and constant through the cycle.
+    # Absolute pose values are measured by tools/verify_primitive_pose.py.
     prim = MOVE_PRIMITIVES["fist_pump"]
     for b_int in (0.0, 1.0, 2.0, 3.0):
         on = prim(b_int, 1.0)
         off = prim(b_int + 0.5, 1.0)
-        assert on["l_shoulder_pitch"] == pytest.approx(-1.9, abs=1e-6)
-        assert off["l_shoulder_pitch"] == pytest.approx(-1.5, abs=1e-6)
-        assert on["l_elbow"] == pytest.approx(1.0, abs=1e-6)
-        assert off["l_elbow"] == pytest.approx(0.5, abs=1e-6)
+        # Fist extends (elbow angle smaller) ON the beat.
+        assert on["l_elbow"] < off["l_elbow"] - 0.5, (
+            f"b={b_int}: expected elbow extension on-beat, "
+            f"on={on['l_elbow']:.3f} off={off['l_elbow']:.3f}")
+        # Mirror right.
+        assert on["r_elbow"] == pytest.approx(on["l_elbow"], abs=1e-9)
+        assert on["r_shoulder_roll"] == pytest.approx(
+            -on["l_shoulder_roll"], abs=1e-9)
+        # Shoulder_roll keeps the arms overhead throughout (not pulsing).
+        assert on["l_shoulder_roll"] == pytest.approx(
+            off["l_shoulder_roll"], abs=1e-9)
+        assert on["l_shoulder_roll"] > 1.8  # abducted close to the URDF ceiling
 
 
-def test_clap_accent_lands_on_beats_2_and_4():
-    # 0-indexed beat_pos: musical beats 1,2,3,4 correspond to b=0,1,2,3.
-    # Backbeat clap → accent at b=1 and b=3 (and 5, 7, ...). At b=0,2
-    # we're at rest. Period is 2 beats.
-    prim = MOVE_PRIMITIVES["clap"]
-    rest_b0 = prim(0.0, 1.0)
-    clap_b1 = prim(1.0, 1.0)
-    rest_b2 = prim(2.0, 1.0)
-    clap_b3 = prim(3.0, 1.0)
-    # Rest position: pulse=0 → l_roll=1.0, elbow=1.2.
-    assert rest_b0["l_shoulder_roll"] == pytest.approx(1.0, abs=1e-6)
-    assert rest_b0["l_elbow"] == pytest.approx(1.2, abs=1e-6)
-    # Clap position: pulse=1 → l_roll=1.6, elbow=1.8.
-    assert clap_b1["l_shoulder_roll"] == pytest.approx(1.6, abs=1e-6)
-    assert clap_b1["l_elbow"] == pytest.approx(1.8, abs=1e-6)
-    # 2-beat periodicity: beat 0 == beat 2, beat 1 == beat 3.
-    assert rest_b2["l_shoulder_roll"] == pytest.approx(
-        rest_b0["l_shoulder_roll"], abs=1e-9)
-    assert clap_b3["l_shoulder_roll"] == pytest.approx(
-        clap_b1["l_shoulder_roll"], abs=1e-9)
-    # And clap > rest in amplitude by a clear margin.
-    assert clap_b1["l_shoulder_roll"] > rest_b0["l_shoulder_roll"] + 0.3
-    assert clap_b3["l_elbow"] > rest_b2["l_elbow"] + 0.3
+def test_clap_is_retired_but_the_primitive_function_still_exists():
+    # 2026-10-11: clap was retired because the URDF cannot physically
+    # bring the two hands to the body midline (l_shoulder_roll has no
+    # negative range, elbow axis is Y). The vocabulary and tables were
+    # purged, but `_prim_clap` was left in the module so a future URDF
+    # revision can re-register it. This test pins both halves of that
+    # contract.
+    import groovebot.groove_style as gs
+    assert "clap" not in MOVE_PRIMITIVES
+    assert "clap" not in MOVES
+    # The function definition is still importable for the revival path.
+    assert hasattr(gs, "_prim_clap")
+    out = gs._prim_clap(1.0, 1.0)
+    assert "l_shoulder_roll" in out and "l_elbow" in out
+
+
+def test_arm_swing_peak_lands_on_every_beat_and_swings_forward():
+    # v1.2 phase contract: accent, 1-beat cycle, peak ON each beat.
+    # The arm_swing design (2026-10-11) oscillates r_shoulder_pitch
+    # between +0.30 (rest, lean back) and -0.60 (peak, thrust forward)
+    # while r_shoulder_roll is held at -2.20 (overhead abduction, right).
+    prim = MOVE_PRIMITIVES["arm_swing"]
+    for b_int in (0.0, 1.0, 2.0, 3.0):
+        on  = prim(b_int, 1.0)
+        off = prim(b_int + 0.5, 1.0)
+        # Forward thrust (more negative pitch) on the beat.
+        assert on["r_shoulder_pitch"] < off["r_shoulder_pitch"] - 0.5, (
+            b_int, on["r_shoulder_pitch"], off["r_shoulder_pitch"])
+        # Overhead roll is fixed through the cycle.
+        assert on["r_shoulder_roll"] == pytest.approx(
+            off["r_shoulder_roll"], abs=1e-9)
+        assert on["r_shoulder_roll"] < -2.0, on["r_shoulder_roll"]
+        # Right arm only — left shoulder/elbow absent from the delta.
+        for jn in ("l_shoulder_pitch", "l_shoulder_roll", "l_elbow"):
+            assert jn not in on, (b_int, jn)
 
 
 def test_sway_continuous_zero_on_beats_peak_off_beats():
@@ -294,15 +336,28 @@ def test_rock_continuous_zero_on_beats_peak_off_beats():
 
 def test_penlight_wave_continuous_zero_on_beats_peak_off_beats():
     # Wave channels (neck_yaw, torso_roll) follow sin(πb) — same phase
-    # convention as sway/rock.
+    # convention as sway/rock. The rewrite (2026-10-01) made the move
+    # bilateral: both arms are driven, shoulder_roll stays overhead
+    # (fixed) while torso_roll + neck_yaw carry the sway. The invariants
+    # pinned here are (a) wave channels zero on integer beats and peak
+    # at the half-beat with mirrored sign, and (b) left and right arms
+    # both held overhead throughout.
     prim = MOVE_PRIMITIVES["penlight_wave"]
     for b_int in (0.0, 1.0, 2.0, 3.0):
         out = prim(b_int, 1.0)
         assert out["neck_yaw"] == pytest.approx(0.0, abs=1e-9)
         assert out["torso_roll"] == pytest.approx(0.0, abs=1e-9)
     out_half = prim(0.5, 1.0)
-    assert out_half["neck_yaw"] == pytest.approx(0.40, abs=1e-6)
-    assert out_half["torso_roll"] == pytest.approx(0.20, abs=1e-6)
+    assert out_half["neck_yaw"] > 0.1
+    assert out_half["torso_roll"] > 0.1
+    out_1p5 = prim(1.5, 1.0)
+    assert out_1p5["neck_yaw"] == pytest.approx(-out_half["neck_yaw"], abs=1e-9)
+    assert out_1p5["torso_roll"] == pytest.approx(-out_half["torso_roll"], abs=1e-9)
+    # Both arms are driven and held overhead (not just the left).
+    assert out_half["r_shoulder_roll"] == pytest.approx(
+        -out_half["l_shoulder_roll"], abs=1e-9)
+    assert out_half["l_shoulder_roll"] > 1.8
+    assert out_half["r_elbow"] == pytest.approx(out_half["l_elbow"], abs=1e-9)
 
 
 # ----------------------------------------------------- generator wiring

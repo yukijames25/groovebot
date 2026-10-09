@@ -77,7 +77,7 @@ ACCENT_PHASE: dict[str, str] = {
     "headbang":      "on-beat",
     "bob_nod":       "on-beat",
     "fist_pump":     "on-beat",
-    "clap":          "backbeat (2 & 4)",
+    "arm_swing":     "on-beat (unilateral)",
     "sway":          "continuous (sin(πb))",
     "rock":          "continuous (sin(πb))",
     "penlight_wave": "continuous (sin(πb))",

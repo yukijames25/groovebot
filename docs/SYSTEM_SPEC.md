@@ -111,6 +111,35 @@
   AudioInput ──► BeatTracker ──► beat_pos, downbeat, tempo  を使用。§14.3)
 ```
 
+### 4.2.1 現状の実装（M1 + v3.1、2026-10-01 時点）
+> **拍はテンポから生成している（歌の揺らぎには未追従）。**
+> 上の 4.2 データフロー図は目標形（M2 以降）であり、現時点のコードは異なる。
+> いま走っているパイプラインは次のとおり:
+>
+> ```
+>  audio.wav ──► GrooveStyleSelector.select(audio, sr)   [song start, 1 回限り]
+>                     │
+>                     ├─► PANNs CNN14 ─► StyleHead      ─► genre_probs
+>                     │                └─ RegressionHead ─► (arousal, valence)
+>                     ├─► attributes.estimate_tempo (librosa.beat.beat_track) ─► tempo_bpm
+>                     ├─► mood_from_va (V/A circumplex)                       ─► mood_probs
+>                     └─► table.select_move ─► GrooveStyle (move, intensity, tempo_bpm, …)
+>                                                           │
+>  Orchestrator (30-50 Hz) ◀─ metronome_from_style(style)   │   [song start, cache]
+>       │
+>       ├─► MetronomePerception.tick(dt) ─► beat_pos      [BPM 駆動の時計、音声未入力]
+>       ├─► StyleGrooveGenerator.generate(ctx) ─► JointCommand
+>       ├─► limits.clamp (NFR-4)
+>       └─► MujocoBackend.set_joint_targets + step
+> ```
+>
+> すなわち音声は**曲頭で 1 回だけ**消費され、`style.tempo_bpm` としてメトロノーム
+> に種を渡したあとは、拍位置は時計で進む。歌唱の揺らぎ・ritardando・弱起には
+> **一切追従しない**。実歌唱タイミングへの追従は `ReferenceAligner`（§14、M2）が
+> 入って初めて成立する。本節のショーケース GIF が示しているのは**スタイル選択
+> であって同期ではない**。この区別は §6 のレイテンシ予算にも波及する（§6.2 ／
+> §6.4 の計測結果を参照）。
+
 ### 4.3 コンポーネント一覧
 | コンポーネント | 責務 | 入力 → 出力 | フェーズ | 実装候補 |
 |---|---|---|---|---|
@@ -123,6 +152,26 @@
 | RobotBackend | 身体駆動 | JointCommand → (物理) | M1 | MuJoCo/PyBullet/Pepper/NAO/RealServo |
 | FeedbackRenderer | 顔・画面表示 | arousal,energy,waveform → 描画 | M2 | 画面UI（LCD/タブレット） |
 | Orchestrator | リアルタイムループ統括 | — | M1 | 自前 |
+
+### 4.4 既知の URDF 制約（実機設計への要件、2026-10-11）
+
+ソフトウェアで動作プリミティブを設計する過程で、現 10-DOF 上半身 URDF
+（`robot/groovebot.urdf`）では**物理的に実現不可能**な動作があることが分かった。
+将来の実機設計で考慮すべき追加自由度として記録する。
+
+| 制約 | 原因 | 影響する動作 | 必要な自由度 |
+|---|---|---|---|
+| **肩の内転 (adduction) 不可** | `l_shoulder_roll` レンジ `[-0.2, +2.6]` ／ `r_shoulder_roll` レンジ `[-2.6, +0.2]` — どちらも腕を体の中心側へ寄せる負方向のレンジがほぼ無い | **clap**（正中線で両手を合わせる） | 肩の内転軸、または肩 roll に対称な負レンジ |
+| **肘が前後面でしか曲がらない** | elbow 軸が forearm ローカル frame の Y（横軸）に固定。前腕を体の正面〜内側へ振り戻すには肩の内旋（Z 軸回り）が別途必要 | clap、腕を胸の前で組む系の静止ポーズ | **肩の内旋軸 (shoulder yaw / internal rotation)** |
+| **手首なし** | 前腕先端が「手」を兼ねる cylinder のみ、手首軸がない | 掌の向きが暗示できない（指差し、ピース、thumbs-up は語れるが見えない） | 手首 roll / pitch（指まで足すと解決しすぎ） |
+
+`clap` プリミティブは `groovebot/groove_style.py` に `_prim_clap()` として残っているが
+`MOVE_PRIMITIVES` dict と `table.MOVES` からは退役済み（2026-10-11）。将来 URDF に
+**肩の内旋軸**か**肩 roll の対称レンジ化**が入れば、`MOVE_PRIMITIVES["clap"] = _prim_clap`
+を再登録するだけで復活できる。退役の判断は`experiments/compare_bucket_vs_continuous.py`
+系の計測結果ではなく、`tools/verify_primitive_pose.py` が実測した
+「clap peak で最小ハンド間隔 20cm（それ以上近づけない）」という**物理限界に起因する
+もの**であり、ソフトウェアの重み調整では解決しない。
 
 ---
 
@@ -228,6 +277,73 @@ class FeedbackRenderer(Protocol):
 タイミングは **ReferenceAligner**（ユーザ選択曲の参照拍グリッド）が支配し、
 GrooveGenerator はスタイル・質感のみを担う（設計リスク#2への対策、§14）。
 参照が無い場合に限り BeatTracker（盲目フォールバック）がタイミングを担う。
+
+### 6.4 課題と計測結果（2026-10-01）
+
+#### 課題: リアルタイム性能を未計測だった
+`MetronomePerception` + `StyleGrooveGenerator` v1.2 + MuJoCo を揃えた v3.1
+時点になっても、§6.2 のレイテンシ予算（NFR-5 の合計 ≤150 ms、NFR-7 の
+制御周期 20–33 ms）は**一度も実測せず**に設計値のまま放置されていた。
+`tools/measure_latency.py` でこの穴を塞ぐ（下記）。
+
+#### 計測結果
+
+**環境**: Windows 11、Python 3.11、CPU のみ（NVIDIA GPU 未使用）、
+PANNs CNN14 ckpt `Cnn14_mAP=0.431.pth` 使用、showcase 4 本（8s wav）。
+制御周期 20 ms（50 Hz）、per-tick は 2000 ticks 実測、warmup=20 ticks 済み。
+
+**(1) 曲頭 1 回限りの `GrooveStyleSelector.select()`**（n=4 クリップ）
+
+| ステージ | mean [ms] | p95 [ms] | 備考 |
+|---|---:|---:|---|
+| audio_load (librosa.load) | 2.4 | 2.8 | wav デコード＋リサンプル |
+| **embed (PANNs CNN14)** | **552** | **561** | **最大コスト** |
+| heads (Style + Regression) | 0.7 | 0.8 | 2 ヘッド合計 |
+| va → mood (`mood_from_va`) | 0.03 | 0.05 | NumPy のみ |
+| tempo (librosa.beat_track) | 163 | 221 | 2 番目に重い |
+| select_move (table lookup) | 0.05 | 0.06 | dict 操作 |
+| **select_total (end-to-end)** | **754** | **785** | — |
+
+→ 曲頭遅延 ≈ 0.75–0.8 秒。NFR-5 は per-event 予算で**これは per-event
+ではない**（曲選択 → ロボット起動の 1 回限りの立ち上がり時間）ため直接の
+比較対象ではないが、「曲が始まってから踊り出すまで 1 秒弱かかる」という
+UX 事実として記録しておく。
+
+**(2) 毎 tick の制御ループ**（n=2000 @ 50 Hz、period = 20 ms）
+
+| ステージ | mean [ms] | p95 [ms] | p99 [ms] | max [ms] |
+|---|---:|---:|---:|---:|
+| perception (MetronomePerception.tick) | 0.001 | 0.001 | 0.003 | 0.005 |
+| generate (StyleGrooveGenerator)       | 0.002 | 0.003 | 0.006 | 0.011 |
+| clamp (URDF range check, NFR-4)       | 0.002 | 0.002 | 0.004 | 0.011 |
+| send (MujocoBackend.set_joint_targets)| 0.001 | 0.001 | 0.001 | 0.003 |
+| step (MujocoBackend.step / mj_forward)| 0.015 | 0.018 | 0.033 | 0.085 |
+| **TICK TOTAL**                        | **0.022** | **0.028** | **0.049** | **0.097** |
+
+→ **NFR-7（50 Hz 固定、周期 20 ms）は余裕で満たす**。p95 = 0.028 ms は周期の
+**0.14%**、headroom は 19.97 ms（99.9%）。全 2000 tick 中 max でも 0.097 ms で
+周期を超えない。ジッタ（p99 − p50）は 0.028 ms。
+
+#### NFR-5（voice→body 合計 ≤150 ms）の現状
+
+**計測不能、ただし原因は明白**: 現時点のパイプラインに**連続的な voice→beat
+経路が存在しない**。per-tick ループは音声を一切消費せず、BPM 時計を進めるだけ
+（§4.2.1 参照）。§6.2 の表の「音声バッファ」「拍/テンション推定」の 2 行は
+`ReferenceAligner` と `ArousalEstimator`（どちらも M2 未実装）が担う前提の
+予算で、空のまま。「ノリ生成」「送出・サーボ整定」の 2 行は上記 per-tick 結果
+で実測済み（合計 p95 ≈ 0.021 ms、budget 50 ms に対して無視できる）。
+
+**判定**: NFR-5 は **M2（オンライン `ReferenceAligner` を `Orchestrator.perception`
+に差し込む）が完了するまで評価不能**。M2 完了後、同じ `tools/measure_latency.py`
+を拡張して (a) 音声バッファ → (b) ReferenceAligner → (c) 生成 → (d) 送出 の
+end-to-end を実測する。
+
+#### 再現方法
+
+```powershell
+python -m tools.measure_latency --ticks 2000
+python -m tools.measure_latency --json data/latency_v3.1.json  # 機械可読
+```
 
 ---
 

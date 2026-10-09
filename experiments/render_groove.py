@@ -54,7 +54,7 @@ Usage:
     python -m experiments.render_groove --all-moves --seconds 4
     python -m experiments.render_groove --style headbang --bpm 140 --seconds 6
     python -m experiments.render_groove --audio data/raw/clip.wav --seconds 8
-    python -m experiments.render_groove --style clap --view front
+    python -m experiments.render_groove --style arm_swing --view front
 """
 from __future__ import annotations
 import argparse

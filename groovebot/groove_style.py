@@ -134,60 +134,147 @@ def _prim_rock(b: float, i: float) -> dict[str, float]:
 
 
 def _prim_fist_pump(b: float, i: float) -> dict[str, float]:
-    """Both arms raised, shoulder pitch pulses peak ON every beat.
+    """Both fists overhead, pulsing upward ON every beat.
 
-    Every term carries the intensity factor so i=0 collapses to the
-    neutral pose. The arms come up as i grows, and the pulse peaks on
-    the beat.
+    Rewrite (2026-10-01): the earlier version left the fists below
+    shoulder height (hand z = 27.5 cm vs shoulder 31 cm, head top 42 cm)
+    because it used shoulder_pitch to swing the arms forward instead of
+    using shoulder_roll to lift them. Measured by
+    `tools/verify_primitive_pose.py` → forward-kinematics world coords.
+
+    Design (verified by `tools/verify_primitive_pose.py` across the
+    intensity sweep 0.3 / 0.5 / 0.7 / 1.0 so hand reach is checked at
+    the operating points, not only at the ceiling):
+
+      Base pose — NOT scaled by intensity, held at ALL i ≥ 0 so even
+      low-energy picks still read as "arms overhead":
+        - shoulder_roll ±2.15 (max |roll| < SOFT_AMP 2.40,
+          well inside the URDF ±2.60): the overhead abduction that
+          puts both elbows above the head.
+        - shoulder_pitch base −0.10: slight forward tilt so the fists
+          are visible from the front.
+        - elbow 1.80 at rest-of-cycle: deeply bent, fists near the
+          head (bicep-up pose).
+
+      Oscillation — SCALED by intensity (rides on `pulse`):
+        - Elbow extends from 1.80 toward 0 on the beat. At i=1 the
+          extension is full (1.80 → 0.00); at i=0.5 the elbow only
+          opens to 0.90; at i=0 the elbow stays at 1.80 (frozen
+          overhead-bent). The hand's forward-and-up reach scales with
+          i while the overhead posture is maintained.
+        - A small forward pitch pulse (−0.30·pulse·i) adds a thrust
+          component so narration's "primary joint peak" picks the
+          beat correctly for accent-category labelling.
+
+      Right side mirrors (negated roll). Phase contract: accent peak
+      ON each beat via (1+cos 2πb)/2 (1-beat cycle).
+
+    Rewrite 2026-10-14: the previous version multiplied shoulder_roll
+    by intensity, so at i=0.5 the roll was only 1.075 — arms barely
+    half-raised. The verifier's intensity sweep now catches that: a
+    pre-rewrite row showed `fist_pump` at i=0.5 reached z=20.3 cm,
+    −21.7 cm BELOW head top. Decoupling pins the overhead pose
+    independent of i.
     """
     pulse = 0.5 * (1.0 + math.cos(2.0 * math.pi * b))           # peak=1 at b=0,1,2,...
-    sh_pitch = (-1.5 - 0.40 * pulse) * i                        # i=1: -1.9 on-beat, -1.5 off
+    # Base pose joints (NOT scaled by i) — fists already overhead at i=0.
+    # The base elbow 1.00 is moderately bent so the pulse's -1.00
+    # extension can still read as a thrust; a tighter base (e.g. 1.80)
+    # left the fist 6 cm below head top at low intensity.
+    base_shoulder_pitch =  -0.10
+    base_shoulder_roll_mag = 2.25
+    base_elbow            =  1.00
+    # Oscillation terms (scaled by i)
+    pitch_offset = -0.30 * pulse * i                            # i=1: [-0.30, 0.00]
+    elbow_offset = -1.00 * pulse * i                            # i=1: [-1.00, 0.00]
     return {
-        "l_shoulder_pitch": sh_pitch,
-        "r_shoulder_pitch": sh_pitch,
-        "l_shoulder_roll": 0.40 * i,
-        "r_shoulder_roll": -0.40 * i,
-        "l_elbow": (0.5 + 0.5 * pulse) * i,                     # i=1: 1.0 on-beat, 0.5 off
-        "r_elbow": (0.5 + 0.5 * pulse) * i,
+        "l_shoulder_pitch": base_shoulder_pitch + pitch_offset,
+        "r_shoulder_pitch": base_shoulder_pitch + pitch_offset,
+        "l_shoulder_roll":  base_shoulder_roll_mag,              # constant
+        "r_shoulder_roll": -base_shoulder_roll_mag,              # constant
+        "l_elbow": base_elbow + elbow_offset,
+        "r_elbow": base_elbow + elbow_offset,
     }
 
 
 def _prim_clap(b: float, i: float) -> dict[str, float]:
-    """Hands forward, clap accents on musical beats 2 & 4 (the backbeat).
+    """Both hands meet in front of the chest on musical beats 2 & 4.
 
-    Period is 2 beats: pulse=0 at b=0,2,4,... (musical beats 1,3, the
-    "and" / rest) and pulse=1 at b=1,3,5,... (musical beats 2,4, the
-    clap moment). Every term carries intensity so i=0 returns neutral.
+    RETIRED (2026-10-11, NOT WIRED INTO MOVE_PRIMITIVES): the current
+    URDF cannot physically realise a two-handed clap at the body
+    midline. The l_shoulder_roll range is [-0.2, +2.6] — essentially no
+    adduction — and the elbow axis is Y, so the forearm hinges in the
+    sagittal plane, not across the chest. The best this primitive can
+    achieve is a 20 cm minimum hand separation in front of the body at
+    peak pulse: hands come near each other but never meet. Measured by
+    `tools/verify_primitive_pose.py`.
+
+    The function is kept so that a future URDF revision — adding a
+    shoulder-yaw / internal-rotation axis, or widening l_shoulder_roll
+    to a negative range so the arm can cross the midline — can revive
+    it by re-registering under `MOVE_PRIMITIVES["clap"]`. See
+    `docs/SYSTEM_SPEC.md §4.4` for the hardware-design implication.
+
+    Phase contract (as last authored): 2-beat period with the accent at
+    b=1,3,… (musical beats 2 & 4 = backbeat), via (1−cos πb)/2.
     """
     pulse = 0.5 * (1.0 - math.cos(math.pi * b))                 # peak=1 at b=1,3,5,...
-    sh_pitch = -0.6 * i
-    l_roll = (1.0 + 0.6 * pulse) * i                            # i=1: 1.0 rest, 1.6 clap
-    r_roll = -(1.0 + 0.6 * pulse) * i
-    elbow = (1.2 + 0.6 * pulse) * i                             # i=1: 1.2 rest, 1.8 clap
+    sh_pitch = -1.50 * i                                        # arms horizontal forward
+    roll_mag = (0.55 - 0.55 * pulse) * i                        # 0.55 rest -> 0.00 at clap
+    elbow    = (1.10 + 1.10 * pulse) * i                        # 1.10 rest -> 2.20 at clap
     return {
         "l_shoulder_pitch": sh_pitch,
         "r_shoulder_pitch": sh_pitch,
-        "l_shoulder_roll": l_roll,
-        "r_shoulder_roll": r_roll,
+        "l_shoulder_roll":   roll_mag,
+        "r_shoulder_roll":  -roll_mag,
         "l_elbow": elbow,
         "r_elbow": elbow,
     }
 
 
 def _prim_penlight_wave(b: float, i: float) -> dict[str, float]:
-    """One arm raised high, swaying with the bar (continuous, 2-beat cycle).
+    """Both arms overhead, swaying left-right together (continuous, 2 beats).
 
-    Same phase convention as sway/rock: sin(π·b) crosses zero on each
-    integer beat, hits the extreme between beats. Every term carries
-    intensity → i=0 returns the neutral pose.
+    Rewrite (2026-10-01): the earlier version drove only the LEFT arm and
+    peaked at z = 30 cm (below the shoulder joint), so the name
+    "両手を頭上で大きくゆっくり振る" was aspirational, not literal. The
+    rewrite drives both arms symmetrically with shoulder_roll near the
+    URDF ceiling, so the hands sit above head-top; the "wave" is a
+    torso-and-neck lateral sway (sin πb) that moves the overhead-held
+    arms together from side to side.
+
+    Measured by `tools/verify_primitive_pose.py` across the intensity
+    sweep 0.3 / 0.5 / 0.7 / 1.0:
+      - L and R hand max z ≈ 51 cm at EVERY intensity (head top 42,
+        shoulder 31). The arms are overhead regardless of i.
+      - Sway amplitude scales with i: torso_roll 0.30·wave·i and
+        neck_yaw 0.40·wave·i → bigger sway at higher i, no sway at i=0.
+    Phase contract preserved: continuous sin(πb) means zero at integer
+    beats, extrema at the half-beat — same convention as sway/rock.
+
+    Rewrite 2026-10-14 (base-pose decoupling): previously multiplied
+    shoulder_roll by i, so at jp_ballad's intensity 0.51 the roll was
+    only 1.02 rad and the hands sat ~22 cm — well below head. The
+    verifier's intensity sweep showed penlight_wave hands at z=21.6 cm
+    (−20.4 vs head top) at i=0.5 under the old formula. The decoupling
+    pins the overhead posture independent of i; only the sway amplitude
+    scales now.
     """
     wave = math.sin(math.pi * b)                                # ±1, period 2 beats
     return {
-        "l_shoulder_pitch": -1.6 * i,
-        "l_shoulder_roll": (1.4 + 0.4 * wave) * i,              # i=1: [1.0, 1.8]
-        "l_elbow": 0.6 * i,
-        "neck_yaw": 0.40 * i * wave,
-        "torso_roll": 0.20 * i * wave,
+        # Base pose (NOT scaled by i): both arms overhead and abducted,
+        # elbow nearly straight, slight forward tilt for front visibility.
+        # Roll 2.10 (up from 2.00) lifts the i=0 hand above head top; the
+        # oscillation contributions only add to that.
+        "l_shoulder_pitch": -0.10,
+        "r_shoulder_pitch": -0.10,
+        "l_shoulder_roll":   2.10,
+        "r_shoulder_roll":  -2.10,
+        "l_elbow": 0.20,
+        "r_elbow": 0.20,
+        # Oscillation (SCALED by i): lateral sway via torso + neck.
+        "torso_roll": 0.30 * wave * i,
+        "neck_yaw":   0.40 * wave * i,
     }
 
 
@@ -198,14 +285,72 @@ def _prim_quiet_listen(b: float, i: float) -> dict[str, float]:
     return {"neck_pitch": nod}
 
 
+def _prim_arm_swing(b: float, i: float) -> dict[str, float]:
+    """Right arm raised overhead, swinging in the sagittal plane on each beat.
+
+    Added 2026-10-11 to carve out the "one-arm overhead point/wave" slot
+    that `fist_pump` (bilateral vertical extend) does not fill. Kinematic
+    chain idea: `r_shoulder_pitch` is applied BEFORE `r_shoulder_roll`
+    in the URDF, so a small pitch oscillation at rest-of-cycle (arm
+    hanging) becomes a FORWARD/BACKWARD swing once the roll lifts the
+    arm overhead. The verifier confirms the sweep is dominant in the
+    x-axis with minimal lateral (y) or vertical (z) travel — the "振る
+    方向は前後" requirement from the task.
+
+    Design (verified by `tools/verify_primitive_pose.py` across the
+    intensity sweep 0.3 / 0.5 / 0.7 / 1.0):
+
+      Base pose — NOT scaled by i:
+        - r_shoulder_roll = −2.20 (overhead-right abduction, inside URDF
+          [-2.60, +0.20] and under SOFT_AMP 2.40)
+        - r_elbow = 0.05 (nearly straight)
+        - Left arm untouched (hangs neutral) — unilateral by design.
+
+      Oscillation — SCALED by i:
+        - r_shoulder_pitch rides on `pulse`: it is 0 at i=0, and at i=1
+          swings from +0.30 (rest, lean back) to −0.60 (peak, thrust
+          forward). Scaled by i so lower intensities give proportionally
+          smaller forward/back swings while the arm stays overhead.
+        - `neck_pitch` and `torso_pitch` add forward-lean / nod on the
+          beat, both scaled by i so a quiet pick stays still.
+
+    Phase contract: accent category, 1-beat cycle, peak ON every beat
+    via (1+cos 2πb)/2 — same as headbang / bob_nod / fist_pump.
+
+    Rewrite 2026-10-14 (base-pose decoupling): previously multiplied
+    r_shoulder_roll and r_elbow by i, so at i=0.5 the arm was only
+    half-raised. The verifier's intensity sweep showed arm_swing hands
+    at z=19.9 cm (−22.1 vs head top) at i=0.5 under the old formula.
+    The decoupling pins the overhead posture independent of i; only
+    the pitch swing and head/torso lean scale now.
+    """
+    pulse = 0.5 * (1.0 + math.cos(2.0 * math.pi * b))           # peak=1 at b=0,1,2,...
+    return {
+        # Oscillation (SCALED by i): pitch swing between rest (+0.30·i)
+        # and forward thrust (−0.60·i).
+        "r_shoulder_pitch": (0.30 - 0.90 * pulse) * i,
+        # Base pose (NOT scaled by i): overhead-right, straight forearm.
+        "r_shoulder_roll":  -2.20,
+        "r_elbow":           0.05,
+        # Head and body nod/lean on the beat (SCALED).
+        "neck_pitch":  -0.20 * pulse * i,
+        "torso_pitch": -0.15 * pulse * i,
+    }
+
+
 MOVE_PRIMITIVES: dict[str, Primitive] = {
     "headbang":      _prim_headbang,
     "bob_nod":       _prim_bob_nod,
     "sway":          _prim_sway,
     "rock":          _prim_rock,
     "fist_pump":     _prim_fist_pump,
-    "clap":          _prim_clap,
+    # "clap" is retired as of 2026-10-11: the URDF cannot bring the two
+    # hands to the body midline (l_shoulder_roll has no negative range,
+    # the elbow axis is Y). `_prim_clap()` is kept in the module so a
+    # future URDF revision can re-register it, but it is deliberately
+    # NOT in this dict so no selector path can surface it.
     "penlight_wave": _prim_penlight_wave,
+    "arm_swing":     _prim_arm_swing,
     "quiet_listen":  _prim_quiet_listen,
 }
 

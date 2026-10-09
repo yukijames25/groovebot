@@ -18,10 +18,16 @@ Upper-body-feasible move vocabulary (10-DOF torso/arms, no legs):
   - bob_nod        : neck pitch small range, medium tempo
   - sway           : torso roll left-right, medium tempo (ballads)
   - rock           : torso pitch forward-back, slow
-  - fist_pump      : arms up, beat-synced shoulder pitch
-  - clap           : both arms forward, beat-synced elbow
-  - penlight_wave  : one arm raised, side-to-side wave (idol-style)
+  - fist_pump      : both arms overhead, beat-synced extend/retract
+  - penlight_wave  : both arms overhead with torso-roll sway (idol crowd)
+  - arm_swing      : right arm overhead, swings forward/back on each beat
   - quiet_listen   : near-pose, tiny breath-like motion only
+
+Retired 2026-10-11:
+  - clap  : the URDF cannot bring the two hands to the midline. The
+            primitive code lives on in `groove_style.py` for a future
+            hardware revision; the vocabulary and table weights have
+            been purged. See docs/SYSTEM_SPEC.md §4.4.
 
 Arousal routing (2026-10-02): two modes available, selectable per call.
 
@@ -50,47 +56,70 @@ from groovebot.style.model import GENRES, MOODS
 
 MOVES = (
     "headbang", "bob_nod", "sway", "rock",
-    "fist_pump", "clap", "penlight_wave", "quiet_listen",
+    "fist_pump", "penlight_wave", "arm_swing", "quiet_listen",
 )
 
 
 # Per-genre prior over moves. Rows ideally sum to ~1 (treated as a weight,
 # not strictly a distribution — small over/under is fine).
+#
+# 2026-10-11 clap retirement — see module docstring for the URDF cause.
+# The clap weight is redistributed across the moves that fill its three
+# functional roles: `bob_nod` (beat emphasis), `penlight_wave` (party /
+# crowd gesture), `arm_swing` (new unilateral energetic reach). Row
+# totals are kept at their prior values so no genre's overall salience
+# changes relative to the others.
 _GENRE_FAMILY: dict[str, dict[str, float]] = {
     "blues":     {"sway": 0.4, "bob_nod": 0.3, "rock": 0.2, "quiet_listen": 0.1},
     "classical": {"quiet_listen": 0.6, "sway": 0.4},
-    "country":   {"sway": 0.4, "bob_nod": 0.4, "clap": 0.2},
-    "disco":     {"clap": 0.3, "bob_nod": 0.3, "penlight_wave": 0.2, "fist_pump": 0.2},
+    # country was {sway 0.4, bob_nod 0.4, clap 0.2}. clap served the
+    # hand-clap backbeat; absent a clap primitive, bob_nod (which carries
+    # the beat with the head) absorbs the whole 0.20 — folk/country head
+    # bobbing is the standard embodied substitute.
+    "country":   {"sway": 0.4, "bob_nod": 0.6},
+    # disco was {clap 0.3, bob_nod 0.3, penlight 0.2, fist_pump 0.2}.
+    # Redistributed into party-adjacent moves: penlight +0.15 (disco is
+    # a crowd gesture), arm_swing +0.15 (unilateral idol reach is the
+    # modern disco-floor equivalent of the Saturday-Night-Fever point).
+    "disco":     {"bob_nod": 0.3, "penlight_wave": 0.35, "fist_pump": 0.2,
+                  "arm_swing": 0.15},
     "hiphop":    {"bob_nod": 0.5, "fist_pump": 0.2, "headbang": 0.15, "sway": 0.15},
     "jazz":      {"sway": 0.4, "bob_nod": 0.3, "quiet_listen": 0.3},
     "metal":     {"headbang": 0.6, "fist_pump": 0.25, "bob_nod": 0.15},
-    # 2026-10-01: added fist_pump 0.20 and raised penlight_wave 0.25 → 0.30.
-    # - fist_pump: upbeat pop (idol anthems, dance pop) routinely cues fist
-    #   pumping from the audience; without a non-zero family weight the pop
-    #   path could never route to it even at high arousal.
-    # - penlight_wave at 0.30: in the pop idiom (and especially J-pop) the
-    #   penlight / phone-light wave is as defining a crowd gesture as clap,
-    #   so parity between the two matches the aesthetic rather than ranking
-    #   one above the other and letting mood do the picking.
-    "pop":       {"clap": 0.3, "penlight_wave": 0.30, "bob_nod": 0.25,
-                  "sway": 0.2, "fist_pump": 0.20},
+    # pop was {clap 0.30, penlight 0.30, bob_nod 0.25, sway 0.20, fist 0.20}.
+    # The 0.30 clap weight split: bob_nod +0.10 (backbeat emphasis),
+    # penlight +0.05 (crowd gesture), arm_swing +0.15 (idol unilateral
+    # point). Totals preserved; the party/idol/beat energy is reassigned
+    # to the three natural functional substitutes.
+    "pop":       {"penlight_wave": 0.35, "bob_nod": 0.35, "sway": 0.2,
+                  "fist_pump": 0.20, "arm_swing": 0.15},
     "reggae":    {"sway": 0.5, "bob_nod": 0.3, "rock": 0.2},
     "rock":      {"headbang": 0.4, "fist_pump": 0.3, "bob_nod": 0.3},
 }
 
 # Arousal nudge: add to genre prior. Low arousal up-weights still moves,
 # high arousal up-weights big moves.
+# 2026-10-11: `clap +0.10` on high → replaced with `arm_swing +0.10`.
+# Rationale: the +0.10 was "backbeat punctuation at high arousal", a
+# role arm_swing now fills (unilateral forward punch locks on-beat).
 _AROUSAL_NUDGE: dict[str, dict[str, float]] = {
     "low":  {"quiet_listen": +0.4, "sway": +0.2, "headbang": -0.4, "fist_pump": -0.3},
     "mid":  {},
-    "high": {"quiet_listen": -0.4, "sway": -0.2, "headbang": +0.3, "fist_pump": +0.3, "clap": +0.1},
+    "high": {"quiet_listen": -0.4, "sway": -0.2,
+             "headbang": +0.3, "fist_pump": +0.3, "arm_swing": +0.10},
 }
 
 # Mood preference: distribution over moves per mood. Weight contribution
 # is `mood_prob * value`. Multiple moods compose linearly.
+# 2026-10-11: `happy` had `clap 0.40` — the single biggest preference in
+# the table. Removed and redistributed: penlight_wave +0.15 (party /
+# idol-crowd happiness), bob_nod +0.10 (sing-along beat emphasis),
+# arm_swing +0.15 (celebratory unilateral reach / pointing). Row sums
+# preserved at 1.0.
 _MOOD_MOVE_PREF: dict[str, dict[str, float]] = {
     "aggressive":   {"headbang": 0.6, "fist_pump": 0.3, "bob_nod": 0.1},
-    "happy":        {"clap": 0.4, "penlight_wave": 0.3, "bob_nod": 0.2, "sway": 0.1},
+    "happy":        {"penlight_wave": 0.45, "bob_nod": 0.30, "arm_swing": 0.15,
+                     "sway": 0.1},
     # 2026-10-01: added penlight_wave 0.30. "Sad" in a karaoke-robot context
     # means emotionally moving (ballad) rather than depressed-and-still; a
     # grand slow overhead sway (sea-of-penlights at a ballad) is a natural

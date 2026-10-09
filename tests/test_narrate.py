@@ -235,37 +235,17 @@ def test_beat_trace_marks_on_beat_for_accent_moves(move):
         assert "on-beat" in line, f"{move}: expected on-beat in '{line}'"
 
 
-def test_beat_trace_marks_on_beat_for_clap_accents():
-    # v1.2 phase contract: clap accents land at b=1, 3, 5, ...
-    # (musical beats 2 & 4 = backbeat). The clap pulse is continuous
-    # over a 2-beat period: pulse=0 at b=0, peaks at b=1, back to 0
-    # at b=2. Per-bucket peak phase asymmetry is the signature:
-    #   bucket 0 (musical beat 1): pulse rising → peak_phase near 1.0
-    #   bucket 1 (musical beat 2): pulse at top → peak_phase near 0.0
-    #   bucket 2 (musical beat 3): pulse rising again → near 1.0
-    #   bucket 3 (musical beat 4): pulse at top again → near 0.0
-    # All four are within the 10% on-beat corner, so labels are all
-    # "on-beat" — but the position within the bucket reveals where
-    # the accent really sits.
-    style = _style("clap", intensity=1.0, bpm=120.0)
+def test_beat_trace_marks_on_beat_for_arm_swing_accents():
+    # v1.2 phase contract: arm_swing is accent-category, 1-beat cycle,
+    # the primary joint (r_shoulder_pitch) peaks |value| ON every beat.
+    # Replaces the clap trace test retired with the clap primitive
+    # (2026-10-11, see docs/SYSTEM_SPEC.md §4.4).
+    style = _style("arm_swing", intensity=1.0, bpm=120.0)
     commands = _run_for_commands(style, seconds=2.0, rate=50.0)
     trace = format_beat_trace(style, commands=commands, rate=50.0)
-    assert len(trace) == 4
-
-    def _peak_phase(line: str) -> float:
-        token = next(t for t in line.split() if t.startswith("b+"))
-        return float(token.removeprefix("b+"))
-
-    phases = [_peak_phase(line) for line in trace]
-    # Backbeat: musical 2 & 4 (bucket 1, 3) peak at the beat itself
-    # (phase ≈ 0), while musical 1 & 3 (bucket 0, 2) are the rising
-    # buildup (phase near the right edge).
-    assert phases[1] < 0.10
-    assert phases[3] < 0.10
-    assert phases[0] > 0.90
-    assert phases[2] > 0.90
+    assert trace
     for line in trace:
-        assert "on-beat" in line
+        assert "on-beat" in line, f"expected on-beat label, got '{line}'"
 
 
 # ---------------------------------------------- top-level narrate()
